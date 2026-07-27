@@ -1,4 +1,4 @@
-# ScalpDeck v4 — Vercel live build
+# ScalpDeck v4.3 — Vercel live build
 
 This build fixes the `0 markets` problem seen when the browser tries to call Bybit REST directly from GitHub Pages.
 
@@ -30,3 +30,9 @@ The main dashboard starts with 6 charts and supports 6 / 9 / 12 chart layouts fr
 ## v4.2 coin-list sorting
 
 The Coins panel supports independent sorting by 24h percentage change and 24h USDT turnover. Click **24h** or **Vol** to toggle highest-to-lowest / lowest-to-highest.
+
+
+## v4.3 hotfix
+- Fixes Perpetual symbol loading when the frontend uses the relative `/api` Vercel backend.
+- `new URL()` now resolves against `window.location.origin`, so paginated Bybit linear instruments load correctly.
+- Vercel function region is set to Singapore (`sin1`) to place the REST proxy closer to Bybit market-data infrastructure.

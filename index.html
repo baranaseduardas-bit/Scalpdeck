@@ -148,7 +148,7 @@
       let cursor = '';
       let guard = 0;
       do {
-        const url = new URL(`${API}/instruments-info`);
+        const url = new URL(`${API}/instruments-info`, window.location.origin);
         url.searchParams.set('category', 'linear');
         url.searchParams.set('status', 'Trading');
         url.searchParams.set('limit', '1000');
@@ -186,7 +186,7 @@
       if (!state.allMarkets.length) state.allMarkets = syntheticMarkets();
       state.restConnected = false;
       jitterSynthetic();
-      if (!silent) toast('REST bootstrap unavailable — WebSocket will keep trying');
+      if (!silent) toast(`Market bootstrap failed: ${err?.message || 'API unavailable'}`, true);
     }
     deriveMarkets();
     await hydrateVisibleCandles();
