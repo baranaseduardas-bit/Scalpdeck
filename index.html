@@ -1,0 +1,172 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>ScalpDeck — Crypto Scalping Screener</title>
+  <meta name="description" content="A ScalpBoard-inspired multi-chart crypto scalping screener prototype." />
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <div id="app" class="app-shell">
+    <header class="topbar">
+      <div class="brand" title="ScalpDeck">
+        <span class="brand-mark">▦</span>
+        <span>ScalpDeck</span>
+        <span id="connectionBadge" class="connection-badge"><i></i> connecting</span>
+      </div>
+
+      <div class="toolbar" role="toolbar" aria-label="Screener controls">
+        <button class="tool-btn active" id="toggleDensity" title="Show/hide density levels">≡ Density</button>
+        <button class="tool-btn active" id="toggleCascade" title="Show/hide cascade markers">⌁ Cascades</button>
+
+        <div class="segmented" id="timeframePicker" aria-label="Timeframe">
+          <button data-tf="1" class="active">1m</button>
+          <button data-tf="5">5m</button>
+          <button data-tf="15">15m</button>
+          <button data-tf="60">1h</button>
+        </div>
+
+        <label class="inline-field" title="Minimum 24h turnover in USDT">
+          <span>Vol ≥</span>
+          <select id="volumeFilter">
+            <option value="0">Any</option>
+            <option value="1000000">1M</option>
+            <option value="10000000">10M</option>
+            <option value="50000000" selected>50M</option>
+            <option value="100000000">100M</option>
+            <option value="500000000">500M</option>
+          </select>
+        </label>
+
+        <label class="inline-field">
+          <span>Sort</span>
+          <select id="sortBy">
+            <option value="turnover">Volume</option>
+            <option value="change">24h change</option>
+            <option value="range">Range</option>
+            <option value="natr">NATR</option>
+            <option value="density">Nearest density</option>
+          </select>
+        </label>
+
+        <button class="icon-btn" id="refreshBtn" title="Refresh now">↻</button>
+        <button class="tool-btn active" id="autoSortBtn" title="Auto-sort visible coins">AUTO</button>
+      </div>
+
+      <div class="top-actions">
+        <button class="icon-btn" id="searchBtn" title="Search coin (/) ">⌕</button>
+        <button class="icon-btn" id="layoutBtn" title="Change grid">⊞</button>
+        <button class="icon-btn" id="settingsBtn" title="Settings">⚙</button>
+        <button class="avatar-btn" title="Local prototype">SD</button>
+      </div>
+    </header>
+
+    <main class="workspace">
+      <section class="board-wrap">
+        <div class="board-status">
+          <div>
+            <strong id="boardCount">0</strong> markets
+            <span class="dot-sep">•</span>
+            <span id="sourceLabel">Bybit linear</span>
+          </div>
+          <div class="pager">
+            <button id="prevPage">‹</button><span id="pageLabel">1 / 1</span><button id="nextPage">›</button>
+          </div>
+        </div>
+        <div id="chartGrid" class="chart-grid"></div>
+      </section>
+
+      <aside class="side-panel" id="sidePanel">
+        <nav class="side-tabs">
+          <button class="active" data-tab="coins">Coins</button>
+          <button data-tab="densities">Density map</button>
+          <button data-tab="alerts">Alerts <span id="alertCount" class="pill">3</span></button>
+        </nav>
+
+        <section id="coinsTab" class="tab-panel active">
+          <div class="table-head coin-row">
+            <span>Ticker</span><span>24h</span><span>Range</span><span>NATR</span><span>Vol</span>
+          </div>
+          <div id="coinList" class="coin-list"></div>
+        </section>
+
+        <section id="densitiesTab" class="tab-panel density-panel">
+          <div class="density-toolbar">
+            <span>Order-book walls</span>
+            <span id="densityCoinLabel">market-wide</span>
+          </div>
+          <div id="densityMap" class="density-map"></div>
+          <div class="density-legend"><span>ASK</span><span>distance from market</span><span>BID</span></div>
+        </section>
+
+        <section id="alertsTab" class="tab-panel alerts-panel">
+          <div class="alerts-toolbar">
+            <button id="newAlertBtn" class="primary-btn">+ New alert</button>
+          </div>
+          <div id="alertsList"></div>
+        </section>
+      </aside>
+    </main>
+  </div>
+
+  <div class="modal-backdrop" id="searchModal" aria-hidden="true">
+    <div class="modal search-modal">
+      <div class="modal-title">Open market <button class="close-modal">×</button></div>
+      <input id="coinSearchInput" class="search-input" placeholder="Type BTC, ETH, SOL…" autocomplete="off" />
+      <div id="searchResults" class="search-results"></div>
+      <div class="modal-help">Enter — focus market · Esc — close</div>
+    </div>
+  </div>
+
+  <div class="modal-backdrop" id="settingsModal" aria-hidden="true">
+    <div class="modal settings-modal">
+      <div class="modal-title">Settings <button class="close-modal">×</button></div>
+      <div class="settings-grid">
+        <section>
+          <h3>Board</h3>
+          <label>Charts per page <select id="chartsPerPage"><option>4</option><option selected>6</option><option>9</option><option>12</option></select></label>
+          <label><input type="checkbox" id="showGridLines" checked /> Grid lines</label>
+          <label><input type="checkbox" id="showVolume" checked /> Volume bars</label>
+          <label><input type="checkbox" id="compactHeaders" /> Compact headers</label>
+        </section>
+        <section>
+          <h3>Markets</h3>
+          <label><input type="checkbox" checked disabled /> Bybit Futures</label>
+          <label><input type="checkbox" disabled /> Binance Futures <small>backend needed</small></label>
+          <label><input type="checkbox" disabled /> OKX Futures <small>backend needed</small></label>
+          <label>Refresh <select id="refreshInterval"><option value="5">5 sec</option><option value="10" selected>10 sec</option><option value="30">30 sec</option></select></label>
+        </section>
+        <section>
+          <h3>Signals</h3>
+          <label>Impulse threshold <input id="impulseThreshold" type="number" min="0.5" step="0.5" value="3" />%</label>
+          <label>Density min size <input id="densityThreshold" type="number" min="10000" step="10000" value="250000" /></label>
+          <label><input type="checkbox" id="soundAlerts" /> Sound alerts</label>
+        </section>
+      </div>
+      <div class="modal-actions"><button class="primary-btn close-modal">Done</button></div>
+    </div>
+  </div>
+
+  <div class="modal-backdrop" id="focusModal" aria-hidden="true">
+    <div class="modal focus-modal">
+      <div class="modal-title"><span id="focusTitle">BTCUSDT</span><button class="close-modal">×</button></div>
+      <div id="focusGrid" class="focus-grid"></div>
+    </div>
+  </div>
+
+  <div class="modal-backdrop" id="alertModal" aria-hidden="true">
+    <div class="modal alert-modal">
+      <div class="modal-title">Create alert <button class="close-modal">×</button></div>
+      <label>Market <input id="alertSymbol" value="BTCUSDT" /></label>
+      <label>Type <select id="alertType"><option value="price">Price crosses</option><option value="impulse">Impulse</option><option value="volume">Volume spike</option></select></label>
+      <label>Value <input id="alertValue" type="number" value="70000" /></label>
+      <div class="modal-actions"><button id="saveAlertBtn" class="primary-btn">Save alert</button></div>
+    </div>
+  </div>
+
+  <div id="toastStack" class="toast-stack"></div>
+
+  <script src="app.js"></script>
+</body>
+</html>
