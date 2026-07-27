@@ -3,8 +3,8 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>ScalpDeck — Crypto Scalping Screener</title>
-  <meta name="description" content="A ScalpBoard-inspired multi-chart crypto scalping screener prototype." />
+  <title>ScalpDeck Live — Bybit Spot & Perpetual Screener</title>
+  <meta name="description" content="Live Bybit Spot and Perpetual multi-chart crypto screener using public WebSocket order books and candles." />
   <link rel="stylesheet" href="styles.css" />
 </head>
 <body>
@@ -12,13 +12,19 @@
     <header class="topbar">
       <div class="brand" title="ScalpDeck">
         <span class="brand-mark">▦</span>
-        <span>ScalpDeck</span>
+        <span>ScalpDeck Live</span>
         <span id="connectionBadge" class="connection-badge"><i></i> connecting</span>
+        <span id="latencyLabel" class="latency-label">— ms</span>
       </div>
 
       <div class="toolbar" role="toolbar" aria-label="Screener controls">
         <button class="tool-btn active" id="toggleDensity" title="Show/hide density levels">≡ Density</button>
         <button class="tool-btn active" id="toggleCascade" title="Show/hide cascade markers">⌁ Cascades</button>
+
+        <div class="segmented" id="marketPicker" aria-label="Bybit market type">
+          <button data-category="linear" class="active">Perpetual</button>
+          <button data-category="spot">Spot</button>
+        </div>
 
         <div class="segmented" id="timeframePicker" aria-label="Timeframe">
           <button data-tf="1" class="active">1m</button>
@@ -58,7 +64,7 @@
         <button class="icon-btn" id="searchBtn" title="Search coin (/) ">⌕</button>
         <button class="icon-btn" id="layoutBtn" title="Change grid">⊞</button>
         <button class="icon-btn" id="settingsBtn" title="Settings">⚙</button>
-        <button class="avatar-btn" title="Local prototype">SD</button>
+        <button class="avatar-btn" title="Live public Bybit data">LIVE</button>
       </div>
     </header>
 
@@ -68,7 +74,7 @@
           <div>
             <strong id="boardCount">0</strong> markets
             <span class="dot-sep">•</span>
-            <span id="sourceLabel">Bybit linear</span>
+            <span id="sourceLabel">Bybit Perpetual · WebSocket</span>
           </div>
           <div class="pager">
             <button id="prevPage">‹</button><span id="pageLabel">1 / 1</span><button id="nextPage">›</button>
@@ -94,7 +100,7 @@
         <section id="densitiesTab" class="tab-panel density-panel">
           <div class="density-toolbar">
             <span>Order-book walls</span>
-            <span id="densityCoinLabel">market-wide</span>
+            <span id="densityCoinLabel">L50 · live</span>
           </div>
           <div id="densityMap" class="density-map"></div>
           <div class="density-legend"><span>ASK</span><span>distance from market</span><span>BID</span></div>
@@ -132,15 +138,16 @@
         </section>
         <section>
           <h3>Markets</h3>
-          <label><input type="checkbox" checked disabled /> Bybit Futures</label>
-          <label><input type="checkbox" disabled /> Binance Futures <small>backend needed</small></label>
-          <label><input type="checkbox" disabled /> OKX Futures <small>backend needed</small></label>
+          <label><input type="checkbox" checked disabled /> Bybit Perpetual</label>
+          <label><input type="checkbox" checked disabled /> Bybit Spot</label>
+          <label><input type="checkbox" checked disabled /> Public WebSocket L50</label>
           <label>Refresh <select id="refreshInterval"><option value="5">5 sec</option><option value="10" selected>10 sec</option><option value="30">30 sec</option></select></label>
         </section>
         <section>
           <h3>Signals</h3>
           <label>Impulse threshold <input id="impulseThreshold" type="number" min="0.5" step="0.5" value="3" />%</label>
-          <label>Density min size <input id="densityThreshold" type="number" min="10000" step="10000" value="250000" /></label>
+          <label>Density min size <input id="densityThreshold" type="number" min="1000" step="10000" value="250000" /></label>
+          <label>Max wall distance <input id="densityMaxDistance" type="number" min="0.25" max="10" step="0.25" value="4" />%</label>
           <label><input type="checkbox" id="soundAlerts" /> Sound alerts</label>
         </section>
       </div>

@@ -65,3 +65,6 @@ button{cursor:pointer}
 ::-webkit-scrollbar{width:7px;height:7px}::-webkit-scrollbar-track{background:#0c0e10}::-webkit-scrollbar-thumb{background:#282d34;border-radius:4px}::-webkit-scrollbar-thumb:hover{background:#363c45}
 @media(max-width:1150px){:root{--side:290px}.tool-btn{padding:0 5px}.inline-field span{display:none}}
 @media(max-width:950px){:root{--side:260px}.brand{min-width:auto}.brand>span:nth-child(2){display:none}.chart-grid{grid-template-columns:repeat(2,1fr)!important}.toolbar .tool-btn:nth-of-type(2){display:none}}
+.latency-label{font-size:8px;color:#666f7a;min-width:42px;text-align:right}.connection-badge.live-ws i{box-shadow:0 0 8px rgba(57,201,129,.55)}
+.live-note{font-size:8px;color:#6f7782}.density-chip strong{font-size:7px;opacity:.8}.market-type-tag{font-size:7px;border:1px solid #2e343d;padding:1px 3px;border-radius:2px;color:#727b86}
+.chart-card .live-price{top:29px;font-weight:700}.chart-head.compact~.live-price{top:23px}

@@ -2,16 +2,26 @@
   'use strict';
 
   const API = 'https://api.bybit.com/v5/market';
+  const WS_URL = {
+    linear: 'wss://stream.bybit.com/v5/public/linear',
+    spot: 'wss://stream.bybit.com/v5/public/spot',
+  };
+
   const state = {
+    category: 'linear',
     markets: [],
     allMarkets: [],
     candles: new Map(),
+    books: new Map(),
+    bookDensities: new Map(),
     densities: [],
     timeframe: '1',
     page: 0,
     perPage: 6,
     sortBy: 'turnover',
     minVolume: 50_000_000,
+    densityThreshold: 250_000,
+    densityMaxDistance: 4,
     showDensity: true,
     showCascade: true,
     showGrid: true,
@@ -19,21 +29,30 @@
     compactHeaders: false,
     autoSort: true,
     layoutCols: 3,
-    connected: false,
+    restConnected: false,
+    wsConnected: false,
     refreshSec: 10,
     timer: null,
+    socket: null,
+    socketPing: null,
+    reconnectTimer: null,
+    reconnectAttempt: 0,
+    socketGeneration: 0,
     starred: new Set(['BTCUSDT', 'ETHUSDT', 'SOLUSDT']),
     alerts: [
       { id: 1, type: 'price', symbol: 'BTCUSDT', value: 70000, active: true },
       { id: 2, type: 'impulse', symbol: 'SOLUSDT', value: 3, active: true },
       { id: 3, type: 'volume', symbol: 'ETHUSDT', value: 2, active: true },
     ],
+    previousPrices: new Map(),
+    lastMessageAt: 0,
   };
 
-  const els = Object.fromEntries([
+  const ids = [
     'chartGrid','coinList','densityMap','boardCount','pageLabel','connectionBadge','sourceLabel','densityCoinLabel','alertsList','alertCount',
-    'searchModal','coinSearchInput','searchResults','settingsModal','focusModal','focusGrid','focusTitle','alertModal','toastStack'
-  ].map(id => [id, document.getElementById(id)]));
+    'searchModal','coinSearchInput','searchResults','settingsModal','focusModal','focusGrid','focusTitle','alertModal','toastStack','latencyLabel'
+  ];
+  const els = Object.fromEntries(ids.map(id => [id, document.getElementById(id)]));
 
   const fmt = new Intl.NumberFormat('en-GB', { maximumFractionDigits: 2 });
   const compact = n => {
@@ -53,6 +72,8 @@
   };
   const clamp = (n, a, b) => Math.max(a, Math.min(b, n));
   const hash = str => [...str].reduce((a,c) => ((a << 5) - a + c.charCodeAt(0)) | 0, 0);
+  const marketName = () => state.category === 'spot' ? 'Spot' : 'Perpetual';
+  const sourceCode = () => state.category === 'spot' ? 'BY-S' : 'BY-P';
 
   function toast(message, hot=false) {
     const t = document.createElement('div');
@@ -62,20 +83,22 @@
     setTimeout(() => t.remove(), 3200);
   }
 
-  async function fetchJSON(url, timeout=4500) {
+  async function fetchJSON(url, timeout=6000) {
     const controller = new AbortController();
     const tid = setTimeout(() => controller.abort(), timeout);
     try {
       const r = await fetch(url, { signal: controller.signal, cache: 'no-store' });
       if (!r.ok) throw new Error(`HTTP ${r.status}`);
-      return await r.json();
+      const json = await r.json();
+      if (json?.retCode && json.retCode !== 0) throw new Error(json.retMsg || `Bybit ${json.retCode}`);
+      return json;
     } finally { clearTimeout(tid); }
   }
 
   function syntheticMarkets() {
     const symbols = ['BTCUSDT','ETHUSDT','SOLUSDT','XRPUSDT','DOGEUSDT','ADAUSDT','LINKUSDT','AVAXUSDT','SUIUSDT','TONUSDT','APTUSDT','NEARUSDT','WIFUSDT','ARBUSDT','OPUSDT','INJUSDT','ENAUSDT','PEPEUSDT','FETUSDT','SEIUSDT','LTCUSDT','BCHUSDT','TRXUSDT','ATOMUSDT'];
-    return symbols.map((symbol, i) => {
-      const seed = Math.abs(hash(symbol));
+    return symbols.map(symbol => {
+      const seed = Math.abs(hash(symbol + state.category));
       const base = symbol === 'BTCUSDT' ? 69000 : symbol === 'ETHUSDT' ? 3600 : symbol === 'SOLUSDT' ? 175 : ((seed % 40000) / 1000 + .1);
       const change = ((seed % 1800) / 100) - 9;
       const range = 1 + ((seed >> 3) % 80) / 10;
@@ -96,45 +119,47 @@
     return {
       symbol: x.symbol,
       lastPrice: last,
-      price24hPcnt: Number(x.price24hPcnt),
+      price24hPcnt: Number(x.price24hPcnt || 0),
       highPrice24h: hi,
       lowPrice24h: lo,
-      turnover24h: Number(x.turnover24h),
-      volume24h: Number(x.volume24h),
+      turnover24h: Number(x.turnover24h || 0),
+      volume24h: Number(x.volume24h || 0),
       natr: Math.max(.05, range / 2.7),
       range,
-      trades: Math.round(Number(x.volume24h) * .18),
-      source: 'BY-F',
+      trades: Math.round(Number(x.volume24h || 0) * .18),
+      source: sourceCode(),
+      fundingRate: Number(x.fundingRate || 0),
     };
   }
 
   async function loadMarkets(silent=false) {
     try {
-      const json = await fetchJSON(`${API}/tickers?category=linear`);
+      const json = await fetchJSON(`${API}/tickers?category=${state.category}`);
       if (!json?.result?.list) throw new Error('Unexpected API payload');
       state.allMarkets = json.result.list
         .filter(x => x.symbol.endsWith('USDT') && Number(x.lastPrice) > 0)
         .map(normalizeTicker);
-      state.connected = true;
-      setConnection(true);
-      if (!silent) toast('Live Bybit market feed connected');
+      state.restConnected = true;
+      if (!silent) toast(`Bybit ${marketName()} market list loaded`);
     } catch (err) {
       if (!state.allMarkets.length) state.allMarkets = syntheticMarkets();
-      state.connected = false;
-      setConnection(false);
-      if (!silent) toast('Live feed unavailable — using simulator');
+      state.restConnected = false;
       jitterSynthetic();
+      if (!silent) toast('REST bootstrap unavailable — WebSocket will keep trying');
     }
     deriveMarkets();
     await hydrateVisibleCandles();
     renderAll();
+    connectVisibleWebSocket();
   }
 
-  function setConnection(live) {
+  function setConnection() {
+    const live = state.wsConnected;
     els.connectionBadge.classList.toggle('live', live);
+    els.connectionBadge.classList.toggle('live-ws', live);
     els.connectionBadge.classList.toggle('offline', !live);
-    els.connectionBadge.innerHTML = `<i></i>${live ? 'live' : 'sim'}`;
-    els.sourceLabel.textContent = live ? 'Bybit linear' : 'simulated feed';
+    els.connectionBadge.innerHTML = `<i></i>${live ? 'live ws' : 'reconnecting'}`;
+    els.sourceLabel.textContent = `Bybit ${marketName()} · ${live ? 'WebSocket' : 'REST/bootstrap'}`;
   }
 
   function jitterSynthetic() {
@@ -152,7 +177,7 @@
       if (key === 'change') return Math.abs(b.price24hPcnt) - Math.abs(a.price24hPcnt);
       if (key === 'range') return b.range - a.range;
       if (key === 'natr') return b.natr - a.natr;
-      if (key === 'density') return pseudoDensityDistance(a) - pseudoDensityDistance(b);
+      if (key === 'density') return liveDensityDistance(a) - liveDensityDistance(b);
       return b.turnover24h - a.turnover24h;
     });
     const stars = list.filter(m => state.starred.has(m.symbol));
@@ -162,21 +187,20 @@
     state.page = Math.min(state.page, maxPage);
   }
 
-  function pseudoDensityDistance(m) {
-    return .15 + (Math.abs(hash(m.symbol)) % 350) / 100;
+  function liveDensityDistance(m) {
+    const ds = state.bookDensities.get(m.symbol) || [];
+    return ds.length ? Math.min(...ds.map(d => d.distance)) : 999;
   }
 
-  async function fetchCandles(symbol, tf=state.timeframe, limit=120) {
+  async function fetchCandles(symbol, tf=state.timeframe, limit=160) {
     const key = `${symbol}:${tf}`;
     try {
-      if (state.connected) {
-        const json = await fetchJSON(`${API}/kline?category=linear&symbol=${symbol}&interval=${tf}&limit=${limit}`, 4000);
-        const rows = json?.result?.list;
-        if (rows?.length) {
-          const candles = rows.slice().reverse().map(r => ({ t:Number(r[0]), o:Number(r[1]), h:Number(r[2]), l:Number(r[3]), c:Number(r[4]), v:Number(r[5]) }));
-          state.candles.set(key, candles);
-          return candles;
-        }
+      const json = await fetchJSON(`${API}/kline?category=${state.category}&symbol=${symbol}&interval=${tf}&limit=${limit}`, 5500);
+      const rows = json?.result?.list;
+      if (rows?.length) {
+        const candles = rows.slice().reverse().map(r => ({ t:Number(r[0]), o:Number(r[1]), h:Number(r[2]), l:Number(r[3]), c:Number(r[4]), v:Number(r[5]) }));
+        state.candles.set(key, candles);
+        return candles;
       }
     } catch (_) {}
     const market = state.allMarkets.find(m => m.symbol === symbol) || { lastPrice: 100 };
@@ -186,7 +210,7 @@
   }
 
   function generateCandles(symbol, endPrice, count=120, tf=1) {
-    const seed = Math.abs(hash(symbol + tf));
+    const seed = Math.abs(hash(symbol + tf + state.category));
     let p = endPrice / (1 + ((seed % 20) - 10)/100);
     const out = [];
     let t = Date.now() - count * tf * 60_000;
@@ -203,12 +227,193 @@
   }
 
   async function hydrateVisibleCandles() {
-    const visible = visibleMarkets();
-    await Promise.all(visible.map(m => fetchCandles(m.symbol)));
+    await Promise.all(visibleMarkets().map(m => fetchCandles(m.symbol)));
   }
 
   function visibleMarkets() {
     return state.markets.slice(state.page*state.perPage, state.page*state.perPage + state.perPage);
+  }
+
+  function connectVisibleWebSocket() {
+    disconnectSocket(false);
+    const generation = ++state.socketGeneration;
+    const visible = visibleMarkets();
+    if (!visible.length) return;
+
+    let socket;
+    try { socket = new WebSocket(WS_URL[state.category]); }
+    catch (_) { scheduleReconnect(); return; }
+    state.socket = socket;
+    setConnection();
+
+    socket.onopen = () => {
+      if (generation !== state.socketGeneration) return socket.close();
+      state.wsConnected = true;
+      state.reconnectAttempt = 0;
+      setConnection();
+      const args = [];
+      for (const m of visible) {
+        args.push(`tickers.${m.symbol}`);
+        args.push(`kline.${state.timeframe}.${m.symbol}`);
+        args.push(`orderbook.50.${m.symbol}`);
+      }
+      socket.send(JSON.stringify({ op: 'subscribe', args }));
+      state.socketPing = setInterval(() => {
+        if (socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify({ op: 'ping' }));
+      }, 20000);
+    };
+
+    socket.onmessage = ev => {
+      if (generation !== state.socketGeneration) return;
+      let msg;
+      try { msg = JSON.parse(ev.data); } catch (_) { return; }
+      if (msg.ts) {
+        state.lastMessageAt = Date.now();
+        const latency = Math.max(0, Date.now() - Number(msg.ts));
+        if (els.latencyLabel) els.latencyLabel.textContent = `${Math.min(latency,9999)} ms`;
+      }
+      if (!msg.topic) return;
+      if (msg.topic.startsWith('tickers.')) handleTickerMessage(msg);
+      else if (msg.topic.startsWith('kline.')) handleKlineMessage(msg);
+      else if (msg.topic.startsWith('orderbook.')) handleOrderbookMessage(msg);
+    };
+
+    socket.onerror = () => { state.wsConnected = false; setConnection(); };
+    socket.onclose = () => {
+      if (generation !== state.socketGeneration) return;
+      state.wsConnected = false;
+      setConnection();
+      if (state.socketPing) clearInterval(state.socketPing);
+      state.socketPing = null;
+      scheduleReconnect();
+    };
+  }
+
+  function disconnectSocket(incrementGeneration=true) {
+    if (incrementGeneration) state.socketGeneration++;
+    clearTimeout(state.reconnectTimer);
+    state.reconnectTimer = null;
+    if (state.socketPing) clearInterval(state.socketPing);
+    state.socketPing = null;
+    const s = state.socket;
+    state.socket = null;
+    state.wsConnected = false;
+    if (s && (s.readyState === WebSocket.OPEN || s.readyState === WebSocket.CONNECTING)) {
+      try { s.close(1000, 'resubscribe'); } catch (_) {}
+    }
+  }
+
+  function scheduleReconnect() {
+    clearTimeout(state.reconnectTimer);
+    const delay = Math.min(15000, 1000 * Math.pow(1.7, state.reconnectAttempt++));
+    state.reconnectTimer = setTimeout(connectVisibleWebSocket, delay);
+  }
+
+  function handleTickerMessage(msg) {
+    const d = Array.isArray(msg.data) ? msg.data[0] : msg.data;
+    if (!d?.symbol) return;
+    const idx = state.allMarkets.findIndex(m => m.symbol === d.symbol);
+    if (idx < 0) return;
+    const old = state.allMarkets[idx];
+    const last = Number(d.lastPrice ?? old.lastPrice);
+    const hi = Number(d.highPrice24h ?? old.highPrice24h);
+    const lo = Number(d.lowPrice24h ?? old.lowPrice24h);
+    const range = last ? ((hi-lo)/last)*100 : old.range;
+    state.previousPrices.set(d.symbol, old.lastPrice);
+    state.allMarkets[idx] = {
+      ...old,
+      lastPrice: last,
+      highPrice24h: hi,
+      lowPrice24h: lo,
+      price24hPcnt: Number(d.price24hPcnt ?? old.price24hPcnt),
+      turnover24h: Number(d.turnover24h ?? old.turnover24h),
+      volume24h: Number(d.volume24h ?? old.volume24h),
+      range,
+      natr: Math.max(.05, range/2.7),
+      fundingRate: Number(d.fundingRate ?? old.fundingRate ?? 0),
+      source: sourceCode(),
+    };
+    evaluatePriceAlerts(state.allMarkets[idx]);
+    if (!state.autoSort) patchVisiblePrice(d.symbol);
+    else {
+      deriveMarkets();
+      patchVisiblePrice(d.symbol);
+    }
+  }
+
+  function handleKlineMessage(msg) {
+    const d = msg.data?.[0];
+    if (!d) return;
+    const parts = msg.topic.split('.');
+    const tf = parts[1], symbol = parts[2];
+    const key = `${symbol}:${tf}`;
+    const candles = [...(state.candles.get(key) || [])];
+    const next = { t:Number(d.start), o:Number(d.open), h:Number(d.high), l:Number(d.low), c:Number(d.close), v:Number(d.volume) };
+    const last = candles[candles.length-1];
+    if (last?.t === next.t) candles[candles.length-1] = next;
+    else {
+      candles.push(next);
+      if (candles.length > 180) candles.splice(0, candles.length - 180);
+    }
+    state.candles.set(key, candles);
+    redrawSymbol(symbol, tf);
+  }
+
+  function handleOrderbookMessage(msg) {
+    const symbol = msg.topic.split('.').pop();
+    const data = msg.data;
+    if (!symbol || !data) return;
+    let book = state.books.get(symbol);
+    if (!book || msg.type === 'snapshot') book = { bids:new Map(), asks:new Map(), updated:Date.now() };
+    applyBookSide(book.bids, data.b || []);
+    applyBookSide(book.asks, data.a || []);
+    book.updated = Date.now();
+    state.books.set(symbol, book);
+    computeDensities(symbol);
+    redrawSymbol(symbol);
+  }
+
+  function applyBookSide(map, rows) {
+    for (const row of rows) {
+      const p = String(row[0]), q = Number(row[1]);
+      if (!q) map.delete(p); else map.set(p, q);
+    }
+  }
+
+  function computeDensities(symbol) {
+    const book = state.books.get(symbol);
+    const market = state.allMarkets.find(m => m.symbol === symbol);
+    if (!book || !market?.lastPrice) return;
+    const mid = market.lastPrice;
+    const make = (map, side) => [...map.entries()].map(([p,q]) => {
+      const price = Number(p), qty = Number(q), notional = price * qty;
+      return { symbol, side, price, qty, notional, distance: Math.abs((price-mid)/mid*100), updated:book.updated };
+    }).filter(x => x.notional >= state.densityThreshold && x.distance <= state.densityMaxDistance)
+      .sort((a,b) => b.notional-a.notional).slice(0,4);
+    const ds = [...make(book.asks,'ask'), ...make(book.bids,'bid')].sort((a,b) => a.distance-b.distance);
+    state.bookDensities.set(symbol, ds);
+    rebuildDensityMap();
+  }
+
+  function rebuildDensityMap() {
+    state.densities = visibleMarkets().flatMap(m => state.bookDensities.get(m.symbol) || [])
+      .sort((a,b) => a.distance-b.distance).slice(0,30);
+    renderDensityMap();
+  }
+
+  async function bootstrapOrderbooks() {
+    await Promise.all(visibleMarkets().map(async m => {
+      try {
+        const json = await fetchJSON(`${API}/orderbook?category=${state.category}&symbol=${m.symbol}&limit=50`, 4500);
+        const data = json?.result;
+        if (!data) return;
+        const book = { bids:new Map(), asks:new Map(), updated:Date.now() };
+        applyBookSide(book.bids, data.b || []);
+        applyBookSide(book.asks, data.a || []);
+        state.books.set(m.symbol, book);
+        computeDensities(m.symbol);
+      } catch (_) {}
+    }));
   }
 
   function renderAll() {
@@ -236,15 +441,17 @@
     card.dataset.tf = tf;
     const direction = m.price24hPcnt >= 0 ? 'up' : 'down';
     const hotChange = Math.abs(m.price24hPcnt*100) >= 5 ? 'hot' : direction;
+    const funding = state.category === 'linear' && Number.isFinite(m.fundingRate) ? `<span class="metric">F <strong>${(m.fundingRate*100).toFixed(3)}%</strong></span>` : '';
     card.innerHTML = `
       <div class="chart-head ${state.compactHeaders ? 'compact' : ''}">
         <span class="market-dot"></span>
         <span class="ticker">${m.symbol.replace('USDT','')}</span>
         <span class="exchange">${m.source}</span>
-        <span class="metric ${hotChange}">${pct(m.price24hPcnt*100)}</span>
+        <span class="metric ${hotChange} live-change">${pct(m.price24hPcnt*100)}</span>
         <span class="metric">↕ <strong>${m.range.toFixed(1)}</strong></span>
         <span class="metric">N <strong>${m.natr.toFixed(1)}</strong></span>
         <span class="metric">V <strong>${compact(m.turnover24h)}</strong></span>
+        ${funding}
         <span class="chart-actions">
           <button class="tiny-btn star-btn" title="Watchlist">${state.starred.has(m.symbol) ? '★' : '☆'}</button>
           ${opts.focus ? '' : '<button class="tiny-btn focus-btn" title="Focus mode">⛶</button>'}
@@ -252,11 +459,37 @@
       </div>
       <canvas class="chart-canvas"></canvas>
       <div class="chart-watermark">${m.symbol.replace('USDT','')}</div>
+      <div class="price-tag live-price">${priceFmt(m.lastPrice)}</div>
     `;
     card.querySelector('.star-btn')?.addEventListener('click', e => { e.stopPropagation(); toggleStar(m.symbol); });
     card.querySelector('.focus-btn')?.addEventListener('click', e => { e.stopPropagation(); openFocus(m.symbol); });
     card.addEventListener('dblclick', () => openFocus(m.symbol));
     return card;
+  }
+
+  function patchVisiblePrice(symbol) {
+    const m = state.allMarkets.find(x => x.symbol === symbol);
+    if (!m) return;
+    document.querySelectorAll(`.chart-card[data-symbol="${CSS.escape(symbol)}"]`).forEach(card => {
+      const p = card.querySelector('.live-price');
+      const c = card.querySelector('.live-change');
+      if (p) p.textContent = priceFmt(m.lastPrice);
+      if (c) { c.textContent = pct(m.price24hPcnt*100); c.className = `metric live-change ${m.price24hPcnt>=0?'up':'down'}`; }
+    });
+    const row = document.querySelector(`.coin-row[data-symbol="${CSS.escape(symbol)}"]`);
+    if (row) {
+      row.querySelector('.coin-live-price')?.replaceChildren(document.createTextNode(priceFmt(m.lastPrice)));
+    }
+  }
+
+  function redrawSymbol(symbol, tf=null) {
+    document.querySelectorAll(`.chart-card[data-symbol="${CSS.escape(symbol)}"]`).forEach(card => {
+      if (tf && card.dataset.tf !== tf) return;
+      const m = state.allMarkets.find(x => x.symbol === symbol);
+      const candles = state.candles.get(`${symbol}:${card.dataset.tf}`) || [];
+      const canvas = card.querySelector('canvas');
+      if (m && canvas) drawChart(canvas, candles, m);
+    });
   }
 
   function redrawCanvases() {
@@ -277,28 +510,34 @@
     const w=rect.width,h=rect.height;
     ctx.clearRect(0,0,w,h);
     if (!candles.length) return;
-    const pad={l:5,r:38,t:8,b:16};
+    const pad={l:5,r:44,t:8,b:16};
     const priceH = state.showVolume ? h*.77 : h-pad.b;
     let min=Math.min(...candles.map(c=>c.l)), max=Math.max(...candles.map(c=>c.h));
+    const liveDs = state.bookDensities.get(market.symbol) || [];
+    if (liveDs.length) {
+      min=Math.min(min,...liveDs.map(d=>d.price));
+      max=Math.max(max,...liveDs.map(d=>d.price));
+    }
     const spread=max-min || max*.01 || 1; min-=spread*.07; max+=spread*.07;
     const y=p=>pad.t+(max-p)/(max-min)*(priceH-pad.t);
-    const x=i=>pad.l+i*(w-pad.l-pad.r)/(candles.length-1);
+    const x=i=>pad.l+i*(w-pad.l-pad.r)/(Math.max(1,candles.length-1));
     if(state.showGrid){
       ctx.strokeStyle='#191d22';ctx.lineWidth=1;
       for(let i=1;i<5;i++){const yy=pad.t+i*(priceH-pad.t)/5;ctx.beginPath();ctx.moveTo(pad.l,yy);ctx.lineTo(w-pad.r,yy);ctx.stroke();}
       for(let i=1;i<6;i++){const xx=pad.l+i*(w-pad.l-pad.r)/6;ctx.beginPath();ctx.moveTo(xx,pad.t);ctx.lineTo(xx,priceH);ctx.stroke();}
     }
     if(state.showDensity){
-      const seed=Math.abs(hash(market.symbol));
-      const levels=[
-        market.lastPrice*(1+(0.004+(seed%15)/1000)),
-        market.lastPrice*(1-(0.005+((seed>>3)%18)/1000))
-      ];
-      levels.forEach((p,i)=>{if(p<min||p>max)return;ctx.strokeStyle=i===0?'rgba(237,93,101,.75)':'rgba(57,201,129,.75)';ctx.setLineDash([3,2]);ctx.beginPath();ctx.moveTo(w*.56,y(p));ctx.lineTo(w-pad.r,y(p));ctx.stroke();ctx.setLineDash([]);ctx.font='7px sans-serif';ctx.fillStyle=i===0?'#d78991':'#79c79a';ctx.fillText(`${i===0?'R':'S'} · ${compact(200000+(seed%4_000_000))}`, w*.57, y(p)-2);});
+      liveDs.slice(0,6).forEach(d=>{
+        if(d.price<min||d.price>max)return;
+        ctx.strokeStyle=d.side==='ask'?'rgba(237,93,101,.82)':'rgba(57,201,129,.82)';
+        ctx.setLineDash([3,2]);ctx.beginPath();ctx.moveTo(w*.48,y(d.price));ctx.lineTo(w-pad.r,y(d.price));ctx.stroke();ctx.setLineDash([]);
+        ctx.font='7px sans-serif';ctx.fillStyle=d.side==='ask'?'#d78991':'#79c79a';
+        ctx.fillText(`${d.side==='ask'?'ASK':'BID'} ${compact(d.notional)} · ${d.distance.toFixed(2)}%`, w*.49, y(d.price)-2);
+      });
     }
     const cw=Math.max(1,(w-pad.l-pad.r)/candles.length*.65);
     if(state.showVolume){
-      const maxV=Math.max(...candles.map(c=>c.v));
+      const maxV=Math.max(...candles.map(c=>c.v),1);
       candles.forEach((c,i)=>{const xx=x(i);const vh=(c.v/maxV)*(h-priceH-4);ctx.fillStyle=c.c>=c.o?'rgba(57,201,129,.20)':'rgba(237,93,101,.20)';ctx.fillRect(xx-cw/2,h-pad.b-vh,cw,vh);});
       ctx.strokeStyle='#1c2026';ctx.beginPath();ctx.moveTo(pad.l,priceH+1);ctx.lineTo(w-pad.r,priceH+1);ctx.stroke();
     }
@@ -307,10 +546,13 @@
       ctx.beginPath();ctx.moveTo(xx,y(c.h));ctx.lineTo(xx,y(c.l));ctx.stroke();
       const yy=Math.min(y(c.o),y(c.c)), bh=Math.max(1,Math.abs(y(c.o)-y(c.c)));ctx.fillRect(xx-cw/2,yy,cw,bh);
     });
-    if(state.showCascade){
-      const idx=Math.max(12,candles.length-15-(Math.abs(hash(market.symbol))%35));const c=candles[idx];if(c){ctx.strokeStyle='#b788ff';ctx.lineWidth=1;ctx.beginPath();ctx.moveTo(x(idx)-7,y(c.h)-8);ctx.lineTo(x(idx),y(c.h));ctx.lineTo(x(idx)+7,y(c.h)-8);ctx.stroke();}
+    if(state.showCascade && candles.length>20){
+      const recent = candles.slice(-18);
+      const bodies = recent.map(c => Math.abs(c.c-c.o)/Math.max(c.o,.00000001));
+      const maxBody = Math.max(...bodies), idx = candles.length-18+bodies.indexOf(maxBody), c=candles[idx];
+      if(c && maxBody>.003){ctx.strokeStyle='#b788ff';ctx.lineWidth=1;ctx.beginPath();ctx.moveTo(x(idx)-7,y(c.h)-8);ctx.lineTo(x(idx),y(c.h));ctx.lineTo(x(idx)+7,y(c.h)-8);ctx.stroke();}
     }
-    const last=candles[candles.length-1].c;ctx.strokeStyle='#6b737e';ctx.setLineDash([2,2]);ctx.beginPath();ctx.moveTo(pad.l,y(last));ctx.lineTo(w-pad.r,y(last));ctx.stroke();ctx.setLineDash([]);
+    const last=market.lastPrice || candles[candles.length-1].c;ctx.strokeStyle='#6b737e';ctx.setLineDash([2,2]);ctx.beginPath();ctx.moveTo(pad.l,y(last));ctx.lineTo(w-pad.r,y(last));ctx.stroke();ctx.setLineDash([]);
     ctx.font='7px ui-monospace, monospace';ctx.fillStyle='#7d858f';ctx.textAlign='left';
     for(let i=0;i<5;i++){const p=max-i*(max-min)/4;ctx.fillText(priceFmt(p),w-pad.r+3,y(p)+2);}
     const now=new Date();ctx.fillStyle='#59616b';ctx.fillText(now.toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'}),5,h-4);
@@ -319,42 +561,27 @@
   function renderCoinList() {
     els.coinList.innerHTML='';
     state.markets.slice(0,120).forEach(m=>{
-      const row=document.createElement('div');row.className='coin-row';
+      const row=document.createElement('div');row.className='coin-row';row.dataset.symbol=m.symbol;
       row.innerHTML=`<span class="coin-symbol"><b class="mini-star ${state.starred.has(m.symbol)?'starred':''}">★</b>${m.symbol.replace('USDT','')} <small>${m.source}</small></span><span class="${m.price24hPcnt>=0?'up':'down'}">${pct(m.price24hPcnt*100)}</span><span>${m.range.toFixed(1)}</span><span>${m.natr.toFixed(1)}</span><span>${compact(m.turnover24h)}</span>`;
       row.addEventListener('click',()=>openFocus(m.symbol)); els.coinList.appendChild(row);
     });
     els.boardCount.textContent=state.markets.length;
   }
 
-  async function loadDensities() {
-    const sample=visibleMarkets().slice(0,5);
-    const densities=[];
-    for(const m of sample){
-      try{
-        if(!state.connected) throw new Error('sim');
-        const json=await fetchJSON(`${API}/orderbook?category=linear&symbol=${m.symbol}&limit=200`,2500);
-        const bids=json?.result?.b||[], asks=json?.result?.a||[];
-        const mid=m.lastPrice;
-        const top=(rows,side)=>rows.map(([p,q])=>({symbol:m.symbol,side,price:+p,qty:+q,notional:+p*+q,distance:Math.abs((+p-mid)/mid*100)})).filter(x=>x.notional>=250000&&x.distance<4).sort((a,b)=>b.notional-a.notional).slice(0,3);
-        densities.push(...top(bids,'bid'),...top(asks,'ask'));
-      }catch(_){
-        const seed=Math.abs(hash(m.symbol));
-        densities.push({symbol:m.symbol,side:'ask',notional:300000+seed%8_000_000,distance:.3+(seed%250)/100},{symbol:m.symbol,side:'bid',notional:250000+(seed>>2)%5_000_000,distance:.25+((seed>>3)%260)/100});
-      }
-    }
-    state.densities=densities.sort((a,b)=>a.distance-b.distance).slice(0,24);
-    renderDensityMap();
-  }
-
   function renderDensityMap(){
     els.densityMap.innerHTML='<div class="density-center"></div>';
-    [1,2,3].forEach(n=>{['top','bottom'].forEach(pos=>{const d=document.createElement('div');d.className='density-distance';d.style[pos]=`calc(50% + ${n*14.5}%)`;if(pos==='bottom') d.style[pos]=`calc(50% + ${n*14.5}% - 9px)`;d.textContent=`${n}%`;els.densityMap.appendChild(d);});});
-    const items=state.densities.length?state.densities:state.markets.slice(0,14).map((m,i)=>({symbol:m.symbol,side:i%2?'bid':'ask',notional:300000+(Math.abs(hash(m.symbol))%7_000_000),distance:.2+(i%8)*.38}));
-    items.slice(0,18).forEach((d,i)=>{
+    els.densityCoinLabel.textContent = `L50 · ${marketName().toLowerCase()} · live`;
+    const maxD = state.densityMaxDistance;
+    [1,2,3].filter(n=>n<maxD+.01).forEach(n=>{['top','bottom'].forEach(pos=>{const d=document.createElement('div');d.className='density-distance';d.style[pos]=`calc(50% + ${n/maxD*43}%)`;if(pos==='bottom') d.style[pos]=`calc(50% + ${n/maxD*43}% - 9px)`;d.textContent=`${n}%`;els.densityMap.appendChild(d);});});
+    if (!state.densities.length) {
+      const empty=document.createElement('div');empty.className='empty-board';empty.style.position='absolute';empty.style.inset='40% 0 auto';empty.style.background='transparent';empty.textContent='Waiting for live order-book walls…';els.densityMap.appendChild(empty);return;
+    }
+    state.densities.slice(0,22).forEach((d,i)=>{
       const chip=document.createElement('div');chip.className=`density-chip ${d.side}`;
-      const y=50+(d.side==='ask'?-1:1)*clamp(d.distance/4*44,4,44);
+      const y=50+(d.side==='ask'?-1:1)*clamp(d.distance/maxD*44,4,44);
       const left=4+((Math.abs(hash(d.symbol+i))%62));
-      chip.style.top=`${y}%`;chip.style.left=`${left}%`;chip.innerHTML=`<b>${d.symbol.replace('USDT','')}</b> ${compact(d.notional)}`;chip.title=`${d.symbol} · ${d.side.toUpperCase()} · ${d.distance.toFixed(2)}% · ${compact(d.notional)} USDT`;
+      chip.style.top=`${y}%`;chip.style.left=`${left}%`;chip.innerHTML=`<b>${d.symbol.replace('USDT','')}</b> ${compact(d.notional)} <strong>${d.distance.toFixed(2)}%</strong>`;
+      chip.title=`${d.symbol} · ${d.side.toUpperCase()} · ${d.distance.toFixed(2)}% · ${compact(d.notional)} USDT at ${priceFmt(d.price)}`;
       chip.addEventListener('click',()=>openFocus(d.symbol));els.densityMap.appendChild(chip);
     });
   }
@@ -363,12 +590,23 @@
     els.alertsList.innerHTML='';els.alertCount.textContent=state.alerts.filter(a=>a.active).length;
     state.alerts.forEach(a=>{
       const card=document.createElement('div');card.className='alert-card';
-      const desc=a.type==='price'?`Crosses ${priceFmt(a.value)}`:a.type==='impulse'?`1m candle moves ≥ ${a.value}%`:`Volume spike ≥ ${a.value}x`;
-      card.innerHTML=`<header><div><span class="alert-type">${a.type}</span> <strong>${a.symbol.replace('USDT','')}</strong></div><div class="alert-actions"><button class="toggle-alert">${a.active?'●':'○'}</button><button class="delete-alert">×</button></div></header><p>${desc}</p><p>${a.active?'Watching now':'Paused'} · local demo notification</p>`;
+      const desc=a.type==='price'?`Crosses ${priceFmt(a.value)}`:a.type==='impulse'?`Live candle moves ≥ ${a.value}%`:`Volume spike ≥ ${a.value}x`;
+      card.innerHTML=`<header><div><span class="alert-type">${a.type}</span> <strong>${a.symbol.replace('USDT','')}</strong></div><div class="alert-actions"><button class="toggle-alert">${a.active?'●':'○'}</button><button class="delete-alert">×</button></div></header><p>${desc}</p><p>${a.active?'Watching browser session':'Paused'} · ${marketName()}</p>`;
       card.querySelector('.toggle-alert').onclick=()=>{a.active=!a.active;renderAlerts()};
       card.querySelector('.delete-alert').onclick=()=>{state.alerts=state.alerts.filter(x=>x.id!==a.id);renderAlerts()};
       els.alertsList.appendChild(card);
     });
+  }
+
+  function evaluatePriceAlerts(m) {
+    const prev = state.previousPrices.get(m.symbol);
+    if (!Number.isFinite(prev)) return;
+    for (const a of state.alerts) {
+      if (!a.active || a.type !== 'price' || a.symbol !== m.symbol) continue;
+      if ((prev < a.value && m.lastPrice >= a.value) || (prev > a.value && m.lastPrice <= a.value)) {
+        toast(`${m.symbol} crossed ${priceFmt(a.value)}`, true);
+      }
+    }
   }
 
   function updatePager(){
@@ -376,15 +614,15 @@
   }
 
   function toggleStar(symbol){
-    state.starred.has(symbol)?state.starred.delete(symbol):state.starred.add(symbol);deriveMarkets();renderAll();toast(`${symbol.replace('USDT','')} ${state.starred.has(symbol)?'added to':'removed from'} watchlist`);
+    state.starred.has(symbol)?state.starred.delete(symbol):state.starred.add(symbol);deriveMarkets();renderAll();connectVisibleWebSocket();toast(`${symbol.replace('USDT','')} ${state.starred.has(symbol)?'added to':'removed from'} watchlist`);
   }
 
   async function openFocus(symbol){
     const m=state.allMarkets.find(x=>x.symbol===symbol);if(!m)return;
-    els.focusTitle.textContent=`${symbol} · multi-timeframe focus`;els.focusGrid.innerHTML='';
+    els.focusTitle.textContent=`${symbol} · ${marketName()} · multi-timeframe focus`;els.focusGrid.innerHTML='';
     openModal(els.focusModal);
     const tfs=['1','5','15','60'];
-    await Promise.all(tfs.map(tf=>fetchCandles(symbol,tf,120)));
+    await Promise.all(tfs.map(tf=>fetchCandles(symbol,tf,160)));
     tfs.forEach(tf=>{const card=makeChartCard(m,tf,{focus:true});card.querySelector('.ticker').textContent=`${symbol.replace('USDT','')} · ${tf==='60'?'1h':tf+'m'}`;els.focusGrid.appendChild(card)});
     requestAnimationFrame(redrawCanvases);
   }
@@ -397,42 +635,83 @@
     els.searchResults.innerHTML='';list.forEach((m,i)=>{const r=document.createElement('div');r.className=`search-result${i===0?' selected':''}`;r.innerHTML=`<strong>${m.symbol.replace('USDT','')}</strong><span class="sr-price">${priceFmt(m.lastPrice)}</span><small class="${m.price24hPcnt>=0?'up':'down'}">${pct(m.price24hPcnt*100)}</small>`;r.onclick=()=>{closeModal(els.searchModal);openFocus(m.symbol)};els.searchResults.appendChild(r)});
   }
 
-  function setTimeframe(tf){state.timeframe=tf;document.querySelectorAll('#timeframePicker button').forEach(b=>b.classList.toggle('active',b.dataset.tf===tf));hydrateVisibleCandles().then(renderBoard)}
+  async function setTimeframe(tf){
+    state.timeframe=tf;document.querySelectorAll('#timeframePicker button').forEach(b=>b.classList.toggle('active',b.dataset.tf===tf));
+    await hydrateVisibleCandles();renderBoard();connectVisibleWebSocket();
+  }
 
-  function scheduleRefresh(){clearInterval(state.timer);state.timer=setInterval(async()=>{await loadMarkets(true);await loadDensities();},state.refreshSec*1000)}
+  async function setCategory(category) {
+    if (!['spot','linear'].includes(category) || category === state.category) return;
+    state.category = category;
+    state.page = 0;
+    state.allMarkets = [];
+    state.markets = [];
+    state.candles.clear();
+    state.books.clear();
+    state.bookDensities.clear();
+    state.densities = [];
+    document.querySelectorAll('#marketPicker button').forEach(b=>b.classList.toggle('active',b.dataset.category===category));
+    setConnection();
+    await loadMarkets(true);
+    await bootstrapOrderbooks();
+    renderAll();
+    toast(`Switched to Bybit ${marketName()}`);
+  }
+
+  function scheduleRefresh(){
+    clearInterval(state.timer);
+    state.timer=setInterval(async()=>{
+      try {
+        const json = await fetchJSON(`${API}/tickers?category=${state.category}`,5000);
+        if (json?.result?.list) {
+          const current = new Map(state.allMarkets.map(m=>[m.symbol,m]));
+          for (const x of json.result.list.filter(x=>x.symbol.endsWith('USDT')&&Number(x.lastPrice)>0)) {
+            const n=normalizeTicker(x); current.set(n.symbol,{...(current.get(n.symbol)||{}),...n});
+          }
+          state.allMarkets=[...current.values()];deriveMarkets();renderCoinList();updatePager();
+        }
+      } catch (_) {}
+      if (!state.wsConnected) connectVisibleWebSocket();
+    },state.refreshSec*1000);
+  }
 
   function wireEvents(){
     document.getElementById('toggleDensity').onclick=e=>{state.showDensity=!state.showDensity;e.currentTarget.classList.toggle('active',state.showDensity);redrawCanvases()};
     document.getElementById('toggleCascade').onclick=e=>{state.showCascade=!state.showCascade;e.currentTarget.classList.toggle('active',state.showCascade);redrawCanvases()};
+    document.getElementById('marketPicker').onclick=e=>{if(e.target.dataset.category)setCategory(e.target.dataset.category)};
     document.getElementById('timeframePicker').onclick=e=>{if(e.target.dataset.tf)setTimeframe(e.target.dataset.tf)};
-    document.getElementById('volumeFilter').onchange=e=>{state.minVolume=+e.target.value;state.page=0;deriveMarkets();hydrateVisibleCandles().then(renderAll)};
-    document.getElementById('sortBy').onchange=e=>{state.sortBy=e.target.value;deriveMarkets();hydrateVisibleCandles().then(renderAll)};
-    document.getElementById('refreshBtn').onclick=async()=>{await loadMarkets();await loadDensities()};
+    document.getElementById('volumeFilter').onchange=async e=>{state.minVolume=+e.target.value;state.page=0;deriveMarkets();await hydrateVisibleCandles();renderAll();connectVisibleWebSocket();await bootstrapOrderbooks()};
+    document.getElementById('sortBy').onchange=async e=>{state.sortBy=e.target.value;deriveMarkets();await hydrateVisibleCandles();renderAll();connectVisibleWebSocket();await bootstrapOrderbooks()};
+    document.getElementById('refreshBtn').onclick=async()=>{await loadMarkets();await bootstrapOrderbooks()};
     document.getElementById('autoSortBtn').onclick=e=>{state.autoSort=!state.autoSort;e.currentTarget.classList.toggle('active',state.autoSort);toast(`Auto-sort ${state.autoSort?'enabled':'paused'}`)};
     document.getElementById('searchBtn').onclick=()=>{renderSearch();openModal(els.searchModal);setTimeout(()=>els.coinSearchInput.focus(),30)};
     document.getElementById('settingsBtn').onclick=()=>openModal(els.settingsModal);
     document.getElementById('layoutBtn').onclick=()=>{state.layoutCols=state.layoutCols===3?2:state.layoutCols===2?4:3;renderBoard()};
-    document.getElementById('prevPage').onclick=()=>{if(state.page>0){state.page--;hydrateVisibleCandles().then(renderAll)}};
-    document.getElementById('nextPage').onclick=()=>{const max=Math.ceil(state.markets.length/state.perPage)-1;if(state.page<max){state.page++;hydrateVisibleCandles().then(renderAll)}};
+    document.getElementById('prevPage').onclick=async()=>{if(state.page>0){state.page--;await hydrateVisibleCandles();renderAll();connectVisibleWebSocket();await bootstrapOrderbooks()}};
+    document.getElementById('nextPage').onclick=async()=>{const max=Math.ceil(state.markets.length/state.perPage)-1;if(state.page<max){state.page++;await hydrateVisibleCandles();renderAll();connectVisibleWebSocket();await bootstrapOrderbooks()}};
     document.querySelectorAll('.side-tabs button').forEach(btn=>btn.onclick=()=>{document.querySelectorAll('.side-tabs button').forEach(b=>b.classList.remove('active'));btn.classList.add('active');document.querySelectorAll('.tab-panel').forEach(p=>p.classList.remove('active'));document.getElementById(`${btn.dataset.tab}Tab`).classList.add('active')});
     document.querySelectorAll('.close-modal').forEach(btn=>btn.onclick=()=>closeModal(btn.closest('.modal-backdrop')));
     document.querySelectorAll('.modal-backdrop').forEach(bg=>bg.addEventListener('mousedown',e=>{if(e.target===bg)closeModal(bg)}));
     els.coinSearchInput.oninput=e=>renderSearch(e.target.value);
     els.coinSearchInput.onkeydown=e=>{if(e.key==='Enter'){els.searchResults.querySelector('.search-result')?.click()}};
     document.addEventListener('keydown',e=>{if(e.key==='Escape')document.querySelectorAll('.modal-backdrop.open').forEach(closeModal);if(e.key==='/'&&!['INPUT','SELECT'].includes(document.activeElement.tagName)){e.preventDefault();document.getElementById('searchBtn').click()}});
-    document.getElementById('chartsPerPage').onchange=e=>{state.perPage=+e.target.value;state.page=0;renderAll()};
+    document.getElementById('chartsPerPage').onchange=async e=>{state.perPage=+e.target.value;state.page=0;await hydrateVisibleCandles();renderAll();connectVisibleWebSocket();await bootstrapOrderbooks()};
     document.getElementById('showGridLines').onchange=e=>{state.showGrid=e.target.checked;redrawCanvases()};
     document.getElementById('showVolume').onchange=e=>{state.showVolume=e.target.checked;redrawCanvases()};
     document.getElementById('compactHeaders').onchange=e=>{state.compactHeaders=e.target.checked;renderBoard()};
     document.getElementById('refreshInterval').onchange=e=>{state.refreshSec=+e.target.value;scheduleRefresh()};
+    document.getElementById('densityThreshold').onchange=e=>{state.densityThreshold=Math.max(0,+e.target.value||0);for(const s of state.books.keys())computeDensities(s);redrawCanvases()};
+    document.getElementById('densityMaxDistance').onchange=e=>{state.densityMaxDistance=clamp(+e.target.value||4,.25,10);for(const s of state.books.keys())computeDensities(s);redrawCanvases()};
     document.getElementById('newAlertBtn').onclick=()=>openModal(els.alertModal);
     document.getElementById('saveAlertBtn').onclick=()=>{const symbol=document.getElementById('alertSymbol').value.trim().toUpperCase();const type=document.getElementById('alertType').value;const value=+document.getElementById('alertValue').value;if(!symbol||!value)return;state.alerts.unshift({id:Date.now(),symbol,type,value,active:true});renderAlerts();closeModal(els.alertModal);toast(`Alert created for ${symbol}`)};
     window.addEventListener('resize',()=>requestAnimationFrame(redrawCanvases));
+    window.addEventListener('beforeunload',()=>disconnectSocket());
+    document.addEventListener('visibilitychange',()=>{if(!document.hidden&&!state.wsConnected)connectVisibleWebSocket()});
   }
 
   async function init(){
-    wireEvents();renderAlerts();setConnection(false);await loadMarkets(true);await loadDensities();scheduleRefresh();
-    setTimeout(()=>toast('Tip: double-click any chart to open Focus mode'),700);
+    wireEvents();renderAlerts();setConnection();await loadMarkets(true);await bootstrapOrderbooks();renderAll();scheduleRefresh();
+    setTimeout(()=>toast('Live mode: Bybit Spot/Perpetual + L50 order-book walls'),500);
   }
 
   init();
