@@ -1,185 +1,81 @@
-<!doctype html>
-<html lang="en">
-<head>
-  <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>ScalpDeck Live — Bybit Spot & Perpetual Screener</title>
-  <meta name="description" content="Live Bybit USDT Spot and Perpetual multi-chart screener using TradingView Lightweight Charts and Bybit public WebSocket order books." />
-  <link rel="stylesheet" href="styles.css" />
-</head>
-<body>
-  <div id="app" class="app-shell">
-    <header class="topbar">
-      <div class="brand" title="ScalpDeck">
-        <span class="brand-mark">▦</span>
-        <span>ScalpDeck Live</span>
-        <span id="connectionBadge" class="connection-badge"><i></i> connecting</span>
-        <span id="latencyLabel" class="latency-label">— ms</span>
-      </div>
+:root {
+  --bg:#090a0c;
+  --panel:#0e1013;
+  --panel-2:#12151a;
+  --panel-3:#171a20;
+  --line:#252931;
+  --line-soft:#1c2026;
+  --text:#d7dbe1;
+  --muted:#777e89;
+  --green:#39c981;
+  --red:#ed5d65;
+  --amber:#d6b55b;
+  --blue:#6ca2ff;
+  --purple:#b788ff;
+  --cyan:#64d8df;
+  --header:34px;
+  --side:338px;
+  --radius:3px;
+  font-family:Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;
+  color-scheme:dark;
+}
+*{box-sizing:border-box}
+html,body{height:100%;margin:0;background:var(--bg);color:var(--text);overflow:hidden}
+button,input,select{font:inherit;color:inherit}
+button{cursor:pointer}
+.app-shell{height:100%;display:flex;flex-direction:column;min-width:880px}
+.topbar{height:var(--header);min-height:var(--header);display:flex;align-items:center;border-bottom:1px solid var(--line);background:#0b0c0e;padding:0 6px;gap:8px;user-select:none}
+.brand{display:flex;align-items:center;gap:6px;font-size:12px;font-weight:700;white-space:nowrap;min-width:170px}
+.brand-mark{display:inline-grid;place-items:center;width:21px;height:21px;border:1px solid #3a3e46;background:#111318}
+.connection-badge{font-size:9px;font-weight:600;color:var(--muted);display:inline-flex;gap:4px;align-items:center;margin-left:3px}
+.connection-badge i{width:5px;height:5px;border-radius:50%;background:var(--amber);display:inline-block}
+.connection-badge.live i{background:var(--green);box-shadow:0 0 7px rgba(57,201,129,.45)}
+.connection-badge.offline i{background:var(--red)}
+.toolbar{display:flex;align-items:center;gap:4px;flex:1;min-width:0;overflow:hidden}
+.tool-btn,.icon-btn,.topbar select,.segmented button{height:24px;border:1px solid var(--line);background:#111318;color:#9ca3ad;border-radius:2px;font-size:10px;padding:0 8px}
+.tool-btn:hover,.icon-btn:hover,.segmented button:hover{background:#1a1d22;color:#fff}
+.tool-btn.active{border-color:#39414e;color:#d7dbe1;background:#181b20}
+.icon-btn{width:28px;padding:0;font-size:14px}
+.segmented{display:flex;border:1px solid var(--line);border-radius:2px;overflow:hidden;height:24px}
+.segmented button{border:0;border-right:1px solid var(--line);border-radius:0;padding:0 7px;height:22px}
+.segmented button:last-child{border-right:0}.segmented button.active{background:#2a2e35;color:white}
+.inline-field{display:flex;align-items:center;gap:4px;font-size:9px;color:var(--muted);height:24px;white-space:nowrap}
+.inline-field select{height:24px;padding:0 18px 0 6px}
+.top-actions{display:flex;align-items:center;gap:4px;margin-left:auto}.layout-picker{height:24px}.layout-picker button{min-width:25px;padding:0 6px;font-weight:700}.avatar-btn{height:24px;width:29px;border:1px solid #3a3f49;background:#181b21;border-radius:2px;font-size:9px;font-weight:700}
+.workspace{flex:1;min-height:0;display:grid;grid-template-columns:minmax(0,1fr) var(--side);background:var(--bg)}
+.board-wrap{min-width:0;display:flex;flex-direction:column;border-right:1px solid var(--line)}
+.board-status{height:25px;display:flex;justify-content:space-between;align-items:center;padding:0 7px;font-size:9px;color:var(--muted);border-bottom:1px solid var(--line-soft);background:#0c0e10}
+.board-status strong{color:#c7ccd4}.dot-sep{padding:0 5px}.pager{display:flex;align-items:center;gap:6px}.pager button{width:20px;height:18px;border:1px solid var(--line);background:#111318;border-radius:2px;line-height:14px;color:#aaa}
+.chart-grid{flex:1;min-height:0;display:grid;grid-template-columns:repeat(3,minmax(0,1fr));grid-template-rows:repeat(2,minmax(0,1fr));gap:1px;background:var(--line)}
+.chart-grid[data-layout="6"] .chart-card{min-height:220px}
+.chart-grid[data-layout="9"] .chart-card{min-height:145px}
+.chart-grid[data-layout="12"] .chart-card{min-height:145px}
+.chart-card{min-height:0;background:var(--panel);position:relative;display:flex;flex-direction:column;overflow:hidden}
+.chart-card:hover{outline:1px solid #454b55;outline-offset:-1px;z-index:3}
+.chart-head{height:26px;min-height:26px;display:flex;align-items:center;gap:5px;padding:0 6px;background:#101216;border-bottom:1px solid var(--line-soft);font-size:9px;white-space:nowrap;overflow:hidden}
+.chart-head.compact{height:20px;min-height:20px}.market-dot{width:5px;height:5px;background:var(--green);border-radius:50%}.ticker{font-weight:800;color:#ddd;font-size:10px}.exchange{color:#68707b}.metric{color:#89909a}.metric strong{font-weight:600}.up{color:var(--green)!important}.down{color:var(--red)!important}.hot{color:var(--amber)!important}.chart-actions{margin-left:auto;display:flex;gap:3px}.tiny-btn{border:0;background:transparent;color:#67707a;font-size:11px;padding:2px}.tiny-btn:hover{color:white}
+.chart-canvas{width:100%;height:100%;display:block;min-height:80px;cursor:crosshair}
+.chart-watermark{position:absolute;left:50%;top:49%;transform:translate(-50%,-50%);font-size:28px;font-weight:600;letter-spacing:2px;color:rgba(200,200,200,.08);pointer-events:none}
+.price-tag{position:absolute;right:1px;background:#d4d5d7;color:#202226;font-size:8px;padding:1px 3px;border-radius:1px;pointer-events:none}
+.empty-board{display:grid;place-items:center;color:var(--muted);font-size:12px;background:#0d0f12}
+.side-panel{background:var(--panel);min-width:0;display:flex;flex-direction:column}
+.side-tabs{height:31px;display:grid;grid-template-columns:.8fr 1.35fr .8fr;border-bottom:1px solid var(--line)}
+.side-tabs button{border:0;border-right:1px solid var(--line-soft);background:#0f1114;color:#717884;font-size:9px;text-transform:uppercase;letter-spacing:.04em}.side-tabs button.active{background:#15181d;color:#d8dbe0;border-bottom:1px solid #d0d0d0}.pill{display:inline-grid;place-items:center;background:#2b3037;border-radius:8px;min-width:14px;padding:0 4px;font-size:8px}
+.tab-panel{display:none;flex:1;min-height:0;overflow:auto}.tab-panel.active{display:flex;flex-direction:column}.table-head{position:sticky;top:0;z-index:3;background:#111318;border-bottom:1px solid var(--line);color:#656d78;font-size:8px;text-transform:uppercase}.coin-row{display:grid;grid-template-columns:1.3fr .75fr .7fr .7fr .95fr;align-items:center;min-height:23px;padding:0 6px;gap:4px}.coin-list{overflow:auto}.coin-list .coin-row{font-size:9px;border-bottom:1px solid #171a1f;cursor:pointer}.coin-list .coin-row:hover{background:#171a1f}.coin-symbol{font-weight:700;color:#cfd3d8}.coin-symbol small{font-weight:400;color:#555d68;font-size:7px;margin-left:3px}.coin-row span:not(:first-child){text-align:right}.mini-star{color:#525a65;margin-right:4px}.mini-star.starred{color:var(--amber)}
+.coin-sort{appearance:none;border:0;background:transparent;color:inherit;font:inherit;text-transform:inherit;padding:0;text-align:right;cursor:pointer;white-space:nowrap}.coin-sort:hover{color:#aab2bd}.coin-sort.active{color:#d8dde5}.sort-arrow{font-size:7px;margin-left:2px;color:#717b88}.coin-sort.active .sort-arrow{color:var(--amber)}
+.density-toolbar{height:28px;display:flex;justify-content:space-between;align-items:center;padding:0 8px;border-bottom:1px solid var(--line-soft);font-size:9px;color:#8a919b}.density-toolbar span:last-child{color:#555e69}.density-map{position:relative;flex:1;min-height:0;overflow:hidden;background:linear-gradient(to bottom,rgba(237,93,101,.045),transparent 48%,rgba(57,201,129,.045));padding:12px 6px}.density-center{position:absolute;left:0;right:0;top:50%;height:1px;background:#5b626c;opacity:.55}.density-distance{position:absolute;left:50%;transform:translateX(-50%);font-size:8px;color:#59616b}.density-chip{position:absolute;height:18px;display:flex;align-items:center;gap:4px;border:1px solid currentColor;border-radius:2px;padding:0 4px;background:#15181c;font-size:8px;white-space:nowrap;max-width:120px;overflow:hidden}.density-chip.ask{color:#d88993;background:rgba(237,93,101,.08)}.density-chip.bid{color:#83c99f;background:rgba(57,201,129,.08)}.density-chip b{font-size:8px}.density-legend{height:23px;display:flex;justify-content:space-between;align-items:center;padding:0 8px;border-top:1px solid var(--line);font-size:8px;color:#5d646e}.density-legend span:first-child{color:var(--red)}.density-legend span:last-child{color:var(--green)}
+.alerts-toolbar{padding:7px;border-bottom:1px solid var(--line-soft)}.primary-btn{border:1px solid #596472;background:#303741;color:#e9ebef;border-radius:2px;height:27px;padding:0 10px;font-size:10px}.primary-btn:hover{background:#3a424e}.alert-card{padding:9px;border-bottom:1px solid var(--line-soft);font-size:9px}.alert-card header{display:flex;justify-content:space-between;align-items:center;margin-bottom:5px}.alert-type{font-size:8px;text-transform:uppercase;color:#7a8290}.alert-card strong{font-size:11px}.alert-card p{margin:2px 0;color:#7f8792}.alert-actions button{border:0;background:transparent;color:#636b76;padding:2px 4px}.alert-actions button:hover{color:white}
+.modal-backdrop{display:none;position:fixed;inset:0;background:rgba(0,0,0,.65);z-index:50;align-items:center;justify-content:center}.modal-backdrop.open{display:flex}.modal{width:min(520px,92vw);background:#111318;border:1px solid #363b44;box-shadow:0 20px 70px rgba(0,0,0,.55);border-radius:3px}.modal-title{height:36px;border-bottom:1px solid var(--line);display:flex;align-items:center;justify-content:space-between;padding:0 11px;font-weight:700;font-size:11px}.close-modal{border:0;background:transparent;color:#8c939d;font-size:20px}.search-modal{width:min(580px,90vw);align-self:flex-start;margin-top:12vh}.search-input{margin:10px;width:calc(100% - 20px);height:36px;border:1px solid #343944;background:#090b0d;border-radius:2px;padding:0 10px;outline:none}.search-input:focus{border-color:#687280}.search-results{max-height:360px;overflow:auto}.search-result{height:36px;display:grid;grid-template-columns:1fr auto auto;align-items:center;padding:0 11px;border-top:1px solid #171a1f;font-size:10px;cursor:pointer}.search-result:hover,.search-result.selected{background:#1b1f25}.search-result small{color:#666f7c}.search-result .sr-price{color:#adb3bc;margin-right:12px}.modal-help{height:28px;border-top:1px solid var(--line);display:flex;align-items:center;padding:0 10px;color:#5f6670;font-size:8px}.settings-modal{width:min(720px,94vw)}.settings-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:1px;background:var(--line)}.settings-grid section{background:#111318;padding:12px;min-height:190px}.settings-grid h3{font-size:10px;margin:0 0 12px;color:#cbd0d7}.settings-grid label,.alert-modal label{display:flex;align-items:center;justify-content:space-between;gap:10px;margin:9px 0;font-size:9px;color:#8b929c}.settings-grid select,.settings-grid input[type=number],.alert-modal input,.alert-modal select{height:25px;border:1px solid #323740;background:#0b0d10;border-radius:2px;font-size:9px;padding:0 5px;max-width:105px}.settings-grid small{color:#525b66}.modal-actions{display:flex;justify-content:flex-end;padding:9px;border-top:1px solid var(--line)}.focus-modal{width:94vw;height:90vh;display:flex;flex-direction:column}.focus-grid{flex:1;min-height:0;display:grid;grid-template-columns:repeat(2,1fr);grid-template-rows:repeat(2,1fr);gap:1px;background:var(--line)}.alert-modal{width:360px;padding-bottom:2px}.alert-modal label{padding:0 12px}.alert-modal input,.alert-modal select{max-width:180px;width:180px}.toast-stack{position:fixed;right:12px;bottom:12px;z-index:100;display:flex;flex-direction:column;gap:6px}.toast{min-width:220px;max-width:320px;padding:9px 10px;border:1px solid #38404a;background:#161a1f;box-shadow:0 8px 30px rgba(0,0,0,.5);font-size:9px;border-left:3px solid var(--blue)}.toast.hot{border-left-color:var(--amber)}
+::-webkit-scrollbar{width:7px;height:7px}::-webkit-scrollbar-track{background:#0c0e10}::-webkit-scrollbar-thumb{background:#282d34;border-radius:4px}::-webkit-scrollbar-thumb:hover{background:#363c45}
+@media(max-width:1150px){:root{--side:290px}.tool-btn{padding:0 5px}.inline-field span{display:none}}
+@media(max-width:950px){:root{--side:260px}.brand{min-width:auto}.brand>span:nth-child(2){display:none}.toolbar .tool-btn:nth-of-type(2){display:none}.layout-picker button{min-width:22px;padding:0 4px}}
+.latency-label{font-size:8px;color:#666f7a;min-width:42px;text-align:right}.connection-badge.live-ws i{box-shadow:0 0 8px rgba(57,201,129,.55)}
+.live-note{font-size:8px;color:#6f7782}.density-chip strong{font-size:7px;opacity:.8}.market-type-tag{font-size:7px;border:1px solid #2e343d;padding:1px 3px;border-radius:2px;color:#727b86}
+.chart-card .live-price{top:29px;font-weight:700}.chart-head.compact~.live-price{top:23px}
 
-      <div class="toolbar" role="toolbar" aria-label="Screener controls">
-        <button class="tool-btn active" id="toggleDensity" title="Show/hide density levels">≡ Density</button>
-        <button class="tool-btn active" id="toggleCascade" title="Show/hide cascade markers">⌁ Cascades</button>
-
-        <div class="segmented" id="marketPicker" aria-label="Bybit market type">
-          <button data-category="linear" class="active">Perpetual</button>
-          <button data-category="spot">Spot</button>
-        </div>
-
-        <div class="segmented" id="timeframePicker" aria-label="Timeframe">
-          <button data-tf="1" class="active">1m</button>
-          <button data-tf="5">5m</button>
-          <button data-tf="15">15m</button>
-          <button data-tf="60">1h</button>
-        </div>
-
-        <label class="inline-field" title="Minimum 24h turnover in USDT">
-          <span>Vol ≥</span>
-          <select id="volumeFilter">
-            <option value="0">Any</option>
-            <option value="1000000">1M</option>
-            <option value="10000000">10M</option>
-            <option value="50000000" selected>50M</option>
-            <option value="100000000">100M</option>
-            <option value="500000000">500M</option>
-          </select>
-        </label>
-
-        <label class="inline-field">
-          <span>Sort</span>
-          <select id="sortBy">
-            <option value="turnover">Volume</option>
-            <option value="change">24h change</option>
-            <option value="range">Range</option>
-            <option value="natr">NATR</option>
-            <option value="density">Nearest density</option>
-          </select>
-        </label>
-
-        <button class="icon-btn" id="refreshBtn" title="Refresh now">↻</button>
-        <button class="tool-btn active" id="autoSortBtn" title="Auto-sort visible coins">AUTO</button>
-      </div>
-
-      <div class="top-actions">
-        <div class="segmented layout-picker" id="layoutPicker" aria-label="Charts per page">
-          <button data-count="6" class="active" title="6 charts — 3 × 2">6</button>
-          <button data-count="9" title="9 charts — 3 × 3">9</button>
-          <button data-count="12" title="12 charts — 4 × 3">12</button>
-        </div>
-        <button class="icon-btn" id="searchBtn" title="Search coin (/) ">⌕</button>
-        <button class="icon-btn" id="settingsBtn" title="Settings">⚙</button>
-        <button class="avatar-btn" title="Live public Bybit data">LIVE</button>
-      </div>
-    </header>
-
-    <main class="workspace">
-      <section class="board-wrap">
-        <div class="board-status">
-          <div>
-            <strong id="boardCount">0</strong> markets
-            <span class="dot-sep">•</span>
-            <span id="sourceLabel">Bybit Perpetual · WebSocket</span>
-          </div>
-          <div class="pager">
-            <button id="prevPage">‹</button><span id="pageLabel">1 / 1</span><button id="nextPage">›</button>
-          </div>
-        </div>
-        <div id="chartGrid" class="chart-grid"></div>
-      </section>
-
-      <aside class="side-panel" id="sidePanel">
-        <nav class="side-tabs">
-          <button class="active" data-tab="coins">Coins <span class="pill">—</span></button>
-          <button data-tab="densities">Density map</button>
-          <button data-tab="alerts">Alerts <span id="alertCount" class="pill">3</span></button>
-        </nav>
-
-        <section id="coinsTab" class="tab-panel active">
-          <div class="table-head coin-row">
-            <span>Ticker</span><span>24h</span><span>Range</span><span>NATR</span><span>Vol</span>
-          </div>
-          <div id="coinList" class="coin-list"></div>
-        </section>
-
-        <section id="densitiesTab" class="tab-panel density-panel">
-          <div class="density-toolbar">
-            <span>Order-book walls</span>
-            <span id="densityCoinLabel">L50 · live</span>
-          </div>
-          <div id="densityMap" class="density-map"></div>
-          <div class="density-legend"><span>ASK</span><span>distance from market</span><span>BID</span></div>
-        </section>
-
-        <section id="alertsTab" class="tab-panel alerts-panel">
-          <div class="alerts-toolbar">
-            <button id="newAlertBtn" class="primary-btn">+ New alert</button>
-          </div>
-          <div id="alertsList"></div>
-        </section>
-      </aside>
-    </main>
-    <div class="tv-attribution">TradingView Lightweight Charts™ · Copyright © 2025 TradingView, Inc. · <a href="https://www.tradingview.com/" target="_blank" rel="noopener noreferrer">TradingView</a></div>
-  </div>
-
-  <div class="modal-backdrop" id="searchModal" aria-hidden="true">
-    <div class="modal search-modal">
-      <div class="modal-title">Open market <button class="close-modal">×</button></div>
-      <input id="coinSearchInput" class="search-input" placeholder="Type BTC, ETH, SOL…" autocomplete="off" />
-      <div id="searchResults" class="search-results"></div>
-      <div class="modal-help">Enter — focus market · Esc — close</div>
-    </div>
-  </div>
-
-  <div class="modal-backdrop" id="settingsModal" aria-hidden="true">
-    <div class="modal settings-modal">
-      <div class="modal-title">Settings <button class="close-modal">×</button></div>
-      <div class="settings-grid">
-        <section>
-          <h3>Board</h3>
-          <label>Charts per page <select id="chartsPerPage"><option selected>6</option><option>9</option><option>12</option></select></label>
-          <label><input type="checkbox" id="showGridLines" checked /> Grid lines</label>
-          <label><input type="checkbox" id="showVolume" checked /> Volume bars</label>
-          <label><input type="checkbox" id="compactHeaders" /> Compact headers</label>
-        </section>
-        <section>
-          <h3>Markets</h3>
-          <label><input type="checkbox" checked disabled /> Bybit Perpetual</label>
-          <label><input type="checkbox" checked disabled /> Bybit Spot</label>
-          <label><input type="checkbox" checked disabled /> Public WebSocket L50</label>
-          <label>Refresh <select id="refreshInterval"><option value="5">5 sec</option><option value="10" selected>10 sec</option><option value="30">30 sec</option></select></label>
-        </section>
-        <section>
-          <h3>Signals</h3>
-          <label>Impulse threshold <input id="impulseThreshold" type="number" min="0.5" step="0.5" value="3" />%</label>
-          <label>Density min size <input id="densityThreshold" type="number" min="1000" step="10000" value="250000" /></label>
-          <label>Max wall distance <input id="densityMaxDistance" type="number" min="0.25" max="10" step="0.25" value="4" />%</label>
-          <label><input type="checkbox" id="soundAlerts" /> Sound alerts</label>
-        </section>
-      </div>
-      <div class="modal-actions"><button class="primary-btn close-modal">Done</button></div>
-    </div>
-  </div>
-
-  <div class="modal-backdrop" id="focusModal" aria-hidden="true">
-    <div class="modal focus-modal">
-      <div class="modal-title"><span id="focusTitle">BTCUSDT</span><button class="close-modal">×</button></div>
-      <div id="focusGrid" class="focus-grid"></div>
-    </div>
-  </div>
-
-  <div class="modal-backdrop" id="alertModal" aria-hidden="true">
-    <div class="modal alert-modal">
-      <div class="modal-title">Create alert <button class="close-modal">×</button></div>
-      <label>Market <input id="alertSymbol" value="BTCUSDT" /></label>
-      <label>Type <select id="alertType"><option value="price">Price crosses</option><option value="impulse">Impulse</option><option value="volume">Volume spike</option></select></label>
-      <label>Value <input id="alertValue" type="number" value="70000" /></label>
-      <div class="modal-actions"><button id="saveAlertBtn" class="primary-btn">Save alert</button></div>
-    </div>
-  </div>
-
-  <div id="toastStack" class="toast-stack"></div>
-
-  <script src="https://unpkg.com/lightweight-charts@5.2.0/dist/lightweight-charts.standalone.production.js"></script>
-  <script src="app.js"></script>
-</body>
-</html>
+/* TradingView Lightweight Charts integration */
+.tv-chart{position:relative;flex:1;min-height:80px;overflow:hidden}
+.tv-chart canvas{display:block}
+.tv-attribution{position:fixed;right:8px;bottom:2px;z-index:40;font-size:7px;line-height:12px;color:#555d68;pointer-events:none;opacity:.72}
+.tv-attribution a{color:#69727f;text-decoration:none;pointer-events:auto}
+.side-tabs .pill{margin-left:3px;min-width:16px;padding:1px 4px}

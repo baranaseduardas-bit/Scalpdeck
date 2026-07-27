@@ -1,67 +1,29 @@
-const HOSTS = ['https://api.bybit.com', 'https://api.bytick.com'];
+# Deployment — ScalpDeck v4
 
-async function bybitMarketRequest(endpoint, query = {}) {
-  const qs = new URLSearchParams();
-  for (const [key, value] of Object.entries(query)) {
-    if (value !== undefined && value !== null && value !== '') qs.set(key, String(value));
-  }
+## Recommended: Vercel + GitHub
 
-  let lastError;
-  for (const host of HOSTS) {
-    const url = `${host}/v5/market/${endpoint}?${qs.toString()}`;
-    try {
-      const controller = new AbortController();
-      const timer = setTimeout(() => controller.abort(), 9000);
-      const response = await fetch(url, {
-        headers: {
-          'Accept': 'application/json',
-          'User-Agent': 'ScalpDeck/4.0'
-        },
-        signal: controller.signal
-      });
-      clearTimeout(timer);
+Keep GitHub as the source repository and let Vercel deploy it automatically.
 
-      const text = await response.text();
-      if (!response.ok) {
-        lastError = new Error(`Bybit HTTP ${response.status}: ${text.slice(0, 200)}`);
-        continue;
-      }
+Repository root must contain:
 
-      let data;
-      try { data = JSON.parse(text); }
-      catch { throw new Error('Bybit returned non-JSON data'); }
+- index.html
+- styles.css
+- app.js
+- vercel.json
+- api/
+- lib/
 
-      if (data && data.retCode !== undefined && data.retCode !== 0) {
-        throw new Error(`Bybit ${data.retCode}: ${data.retMsg || 'API error'}`);
-      }
-      return data;
-    } catch (error) {
-      lastError = error;
-    }
-  }
-  throw lastError || new Error('Bybit request failed');
-}
+After importing the repository into Vercel, every future GitHub commit will redeploy the site automatically.
 
-function publicQuery(req) {
-  const out = {};
-  for (const [key, value] of Object.entries(req.query || {})) {
-    if (Array.isArray(value)) out[key] = value[0];
-    else out[key] = value;
-  }
-  return out;
-}
+### Test URLs
 
-function sendJson(res, status, body, cacheSeconds = 0) {
-  res.setHeader('Content-Type', 'application/json; charset=utf-8');
-  res.setHeader('Access-Control-Allow-Origin', '*');
-  res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
-  if (cacheSeconds > 0) {
-    res.setHeader('Cache-Control', `s-maxage=${cacheSeconds}, stale-while-revalidate=${Math.max(5, cacheSeconds * 2)}`);
-  } else {
-    res.setHeader('Cache-Control', 'no-store');
-  }
-  res.status(status).json(body);
-}
+After deployment, check:
 
-module.exports = { bybitMarketRequest, publicQuery, sendJson };
+- `/api/tickers?category=linear`
+- `/api/instruments-info?category=spot&status=Trading`
+
+Both should return Bybit JSON. Then open `/` for the application.
+
+## Custom domain
+
+Add the domain in Vercel Project Settings > Domains after the app works on the generated `*.vercel.app` URL.

@@ -1,7 +1,7 @@
 (() => {
   'use strict';
 
-  const API = 'https://api.bybit.com/v5/market';
+  const API = '/api';
   const WS_URL = {
     linear: 'wss://stream.bybit.com/v5/public/linear',
     spot: 'wss://stream.bybit.com/v5/public/spot',
@@ -21,6 +21,8 @@
     page: 0,
     perPage: 6,
     sortBy: 'turnover',
+    coinSortKey: 'turnover',
+    coinSortDir: 'desc',
     minVolume: 50_000_000,
     densityThreshold: 250_000,
     densityMaxDistance: 4,
@@ -79,6 +81,36 @@
   const hash = str => [...str].reduce((a,c) => ((a << 5) - a + c.charCodeAt(0)) | 0, 0);
   const marketName = () => state.category === 'spot' ? 'Spot' : 'Perpetual';
   const sourceCode = () => state.category === 'spot' ? 'BY-S' : 'BY-P';
+
+  const CHART_CDNS = [
+    'https://cdn.jsdelivr.net/npm/lightweight-charts@5.2.0/dist/lightweight-charts.standalone.production.js',
+    'https://unpkg.com/lightweight-charts@5.2.0/dist/lightweight-charts.standalone.production.js',
+  ];
+
+  function loadScript(src, timeout=5000) {
+    return new Promise((resolve, reject) => {
+      const script = document.createElement('script');
+      const timer = setTimeout(() => { script.remove(); reject(new Error(`Timeout loading ${src}`)); }, timeout);
+      script.src = src;
+      script.async = true;
+      script.crossOrigin = 'anonymous';
+      script.onload = () => { clearTimeout(timer); resolve(); };
+      script.onerror = () => { clearTimeout(timer); script.remove(); reject(new Error(`Failed loading ${src}`)); };
+      document.head.appendChild(script);
+    });
+  }
+
+  async function ensureTradingViewCharts() {
+    if (window.LightweightCharts) return true;
+    for (const src of CHART_CDNS) {
+      try {
+        await loadScript(src);
+        if (window.LightweightCharts) return true;
+      } catch (err) { console.warn(err.message); }
+    }
+    console.warn('TradingView Lightweight Charts unavailable; using built-in canvas fallback.');
+    return false;
+  }
 
   function toast(message, hot=false) {
     const t = document.createElement('div');
@@ -146,7 +178,7 @@
       let cursor = '';
       let guard = 0;
       do {
-        const url = new URL(`${API}/instruments-info`);
+        const url = new URL(`${API}/instruments-info`, window.location.origin);
         url.searchParams.set('category', 'linear');
         url.searchParams.set('status', 'Trading');
         url.searchParams.set('limit', '1000');
@@ -184,7 +216,7 @@
       if (!state.allMarkets.length) state.allMarkets = syntheticMarkets();
       state.restConnected = false;
       jitterSynthetic();
-      if (!silent) toast('REST bootstrap unavailable — WebSocket will keep trying');
+      if (!silent) toast(`Market bootstrap failed: ${err?.message || 'API unavailable'}`, true);
     }
     deriveMarkets();
     await hydrateVisibleCandles();
@@ -271,6 +303,33 @@
 
   function visibleMarkets() {
     return state.markets.slice(state.page*state.perPage, state.page*state.perPage + state.perPage);
+  }
+
+  function boardLayout(count = state.perPage) {
+    if (count >= 12) return { cols: 4, rows: 3 };
+    if (count >= 9) return { cols: 3, rows: 3 };
+    return { cols: 3, rows: 2 };
+  }
+
+  function syncLayoutControls() {
+    document.querySelectorAll('#layoutPicker button').forEach(btn => {
+      btn.classList.toggle('active', Number(btn.dataset.count) === state.perPage);
+    });
+    const select = document.getElementById('chartsPerPage');
+    if (select) select.value = String(state.perPage);
+  }
+
+  async function setChartsPerPage(count) {
+    const allowed = [6, 9, 12];
+    state.perPage = allowed.includes(Number(count)) ? Number(count) : 6;
+    state.page = 0;
+    const layout = boardLayout(state.perPage);
+    state.layoutCols = layout.cols;
+    syncLayoutControls();
+    await hydrateVisibleCandles();
+    renderAll();
+    connectVisibleWebSocket();
+    await bootstrapOrderbooks();
   }
 
   function connectVisibleWebSocket() {
@@ -472,7 +531,7 @@
     const item = chartRegistry.get(id);
     if (item) {
       try { item.resizeObserver?.disconnect(); } catch (_) {}
-      try { item.chart?.remove(); } catch (_) {}
+      try { item.chart?.remove?.(); } catch (_) {}
       chartRegistry.delete(id);
     }
   }
@@ -485,9 +544,11 @@
     const visible = visibleMarkets();
     destroyChartsWithin(els.chartGrid);
     els.chartGrid.innerHTML = '';
-    els.chartGrid.style.gridTemplateColumns = `repeat(${state.layoutCols},minmax(0,1fr))`;
-    const rows = Math.ceil(state.perPage / state.layoutCols);
-    els.chartGrid.style.gridTemplateRows = `repeat(${rows},minmax(0,1fr))`;
+    const layout = boardLayout(state.perPage);
+    state.layoutCols = layout.cols;
+    els.chartGrid.dataset.layout = String(state.perPage);
+    els.chartGrid.style.gridTemplateColumns = `repeat(${layout.cols},minmax(0,1fr))`;
+    els.chartGrid.style.gridTemplateRows = `repeat(${layout.rows},minmax(0,1fr))`;
     if (!visible.length) {
       els.chartGrid.innerHTML = '<div class="empty-board">No markets match the current volume filter.</div>';
       return;
@@ -590,9 +651,57 @@
     }]);
   }
 
+  function drawFallbackChart(item, candles, market) {
+    const canvas = item.canvas;
+    const container = item.container;
+    if (!canvas || !container || !candles.length) return;
+    const dpr = Math.max(1, Math.min(2, window.devicePixelRatio || 1));
+    const rect = container.getBoundingClientRect();
+    const width = Math.max(120, Math.floor(rect.width));
+    const height = Math.max(100, Math.floor(rect.height));
+    const targetW = Math.floor(width*dpr), targetH = Math.floor(height*dpr);
+    if (canvas.width !== targetW || canvas.height !== targetH) {
+      canvas.width = targetW; canvas.height = targetH;
+      canvas.style.width = `${width}px`; canvas.style.height = `${height}px`;
+    }
+    const ctx = canvas.getContext('2d');
+    ctx.setTransform(dpr,0,0,dpr,0,0);
+    ctx.clearRect(0,0,width,height);
+    ctx.fillStyle = '#101216'; ctx.fillRect(0,0,width,height);
+    const left=8,right=42,top=8,bottom=state.showVolume?42:18;
+    const cw=Math.max(10,width-left-right), ch=Math.max(10,height-top-bottom);
+    const shown=candles.slice(-90);
+    let min=Math.min(...shown.map(c=>c.l)), max=Math.max(...shown.map(c=>c.h));
+    const pad=(max-min||Math.max(max*.002,.000001))*.08; min-=pad; max+=pad;
+    const y=p=>top+(max-p)/(max-min)*ch;
+    if(state.showGrid){ctx.strokeStyle='#1a1e24';ctx.lineWidth=1;for(let i=1;i<5;i++){const gy=top+ch*i/5;ctx.beginPath();ctx.moveTo(left,gy);ctx.lineTo(left+cw,gy);ctx.stroke();}}
+    const step=cw/Math.max(1,shown.length), body=Math.max(1,Math.min(7,step*.62));
+    const vmax=Math.max(1,...shown.map(c=>c.v||0));
+    shown.forEach((c,i)=>{const x=left+i*step+step/2;const up=c.c>=c.o;ctx.strokeStyle=up?'#39c981':'#ed5d65';ctx.fillStyle=ctx.strokeStyle;ctx.beginPath();ctx.moveTo(x,y(c.h));ctx.lineTo(x,y(c.l));ctx.stroke();const yo=y(c.o),yc=y(c.c);ctx.fillRect(x-body/2,Math.min(yo,yc),body,Math.max(1,Math.abs(yc-yo)));if(state.showVolume){const vh=(c.v||0)/vmax*30;ctx.globalAlpha=.28;ctx.fillRect(x-body/2,height-4-vh,body,vh);ctx.globalAlpha=1;}});
+    if(state.showDensity){for(const d of (state.bookDensities.get(market.symbol)||[]).slice(0,8)){if(d.price<min||d.price>max)continue;const yy=y(d.price);ctx.setLineDash([5,4]);ctx.strokeStyle=d.side==='ask'?'#ed5d65':'#39c981';ctx.beginPath();ctx.moveTo(left,yy);ctx.lineTo(left+cw,yy);ctx.stroke();ctx.setLineDash([]);}}
+    ctx.fillStyle='#707782';ctx.font='10px system-ui,sans-serif';ctx.textAlign='right';ctx.fillText(priceFmt(max),width-4,top+8);ctx.fillText(priceFmt(min),width-4,top+ch);
+  }
+
+  function createFallbackChart(card, candles, market) {
+    const container = card.querySelector('.tv-chart');
+    if (!container) return null;
+    container.innerHTML='';
+    const canvas=document.createElement('canvas');
+    canvas.className='fallback-chart';
+    container.appendChild(canvas);
+    const item={engine:'canvas',canvas,container,card,marketSymbol:market.symbol};
+    const resizeObserver=new ResizeObserver(()=>drawFallbackChart(item,state.candles.get(`${card.dataset.symbol}:${card.dataset.tf}`)||[],market));
+    resizeObserver.observe(container);
+    item.resizeObserver=resizeObserver;
+    chartRegistry.set(card.dataset.chartId,item);
+    drawFallbackChart(item,candles,market);
+    return item;
+  }
+
   function createTradingViewChart(card, candles, market) {
     const container = card.querySelector('.tv-chart');
-    if (!container || !window.LightweightCharts) return null;
+    if (!container) return null;
+    if (!window.LightweightCharts) return createFallbackChart(card, candles, market);
     const rect = container.getBoundingClientRect();
     const chart = LightweightCharts.createChart(container, {
       width: Math.max(80, Math.floor(rect.width)),
@@ -634,7 +743,7 @@
       markerApi = LightweightCharts.createSeriesMarkers(candleSeries, []);
     }
 
-    const item = { chart, candles: candleSeries, volume: volumeSeries, markerApi, densityLines: [], card, container };
+    const item = { engine:'tradingview', chart, candles: candleSeries, volume: volumeSeries, markerApi, densityLines: [], card, container };
     applyDensityLines(item, market);
     applyCascadeMarker(item, candles);
     chart.timeScale().fitContent();
@@ -663,6 +772,7 @@
     let item = chartRegistry.get(card.dataset.chartId);
     if (!item) item = createTradingViewChart(card, candles, m);
     if (!item) return;
+    if (item.engine === 'canvas') { drawFallbackChart(item, candles, m); return; }
     item.chart.applyOptions({
       grid: { vertLines: { visible: state.showGrid, color: '#1a1e24' }, horzLines: { visible: state.showGrid, color: '#1a1e24' } },
       rightPriceScale: { scaleMargins: { top: .08, bottom: state.showVolume ? .24 : .08 } },
@@ -688,25 +798,45 @@
 
   function sortedCoinUniverse() {
     const list = [...state.allMarkets];
-    const key = state.sortBy;
+    const key = state.coinSortKey;
+    const dir = state.coinSortDir === 'asc' ? 1 : -1;
     list.sort((a,b) => {
-      if (state.starred.has(a.symbol) !== state.starred.has(b.symbol)) return state.starred.has(a.symbol) ? -1 : 1;
-      if (key === 'change') return Math.abs(b.price24hPcnt) - Math.abs(a.price24hPcnt);
-      if (key === 'range') return b.range - a.range;
-      if (key === 'natr') return b.natr - a.natr;
-      if (key === 'density') return liveDensityDistance(a) - liveDensityDistance(b);
-      return b.turnover24h - a.turnover24h;
+      let av = 0, bv = 0;
+      if (key === 'change') { av = a.price24hPcnt; bv = b.price24hPcnt; }
+      else if (key === 'volume') { av = a.turnover24h; bv = b.turnover24h; }
+      else if (key === 'range') { av = a.range; bv = b.range; }
+      else if (key === 'natr') { av = a.natr; bv = b.natr; }
+      else { av = a.turnover24h; bv = b.turnover24h; }
+      const diff = (av - bv) * dir;
+      return diff || a.symbol.localeCompare(b.symbol);
     });
     return list;
+  }
+
+  function updateCoinSortHeaders() {
+    document.querySelectorAll('.coin-sort').forEach(btn => {
+      const active = btn.dataset.coinSort === state.coinSortKey;
+      btn.classList.toggle('active', active);
+      const arrow = btn.querySelector('.sort-arrow');
+      if (arrow) arrow.textContent = active ? (state.coinSortDir === 'desc' ? '▼' : '▲') : '↕';
+      btn.setAttribute('aria-sort', active ? (state.coinSortDir === 'desc' ? 'descending' : 'ascending') : 'none');
+    });
+  }
+
+  function setCoinSort(key) {
+    if (state.coinSortKey === key) state.coinSortDir = state.coinSortDir === 'desc' ? 'asc' : 'desc';
+    else { state.coinSortKey = key; state.coinSortDir = 'desc'; }
+    renderCoinList();
   }
 
   function renderCoinList() {
     els.coinList.innerHTML='';
     sortedCoinUniverse().forEach(m=>{
       const row=document.createElement('div');row.className='coin-row';row.dataset.symbol=m.symbol;
-      row.innerHTML=`<span class="coin-symbol"><b class="mini-star ${state.starred.has(m.symbol)?'starred':''}">★</b>${m.symbol.replace('USDT','')} <small>${m.source}</small></span><span class="${m.price24hPcnt>=0?'up':'down'}">${pct(m.price24hPcnt*100)}</span><span>${m.range.toFixed(1)}</span><span>${m.natr.toFixed(1)}</span><span>${compact(m.turnover24h)}</span>`;
+      row.innerHTML=`<span class="coin-symbol"><b class="mini-star ${state.starred.has(m.symbol)?'starred':''}">★</b>${m.symbol.replace('USDT','')} <small>${m.source}</small></span><span class="${m.price24hPcnt>=0?'up':'down'}">${pct(m.price24hPcnt*100)}</span><span>${m.range.toFixed(1)}</span><span>${m.natr.toFixed(1)}</span><span title="24h turnover: ${fmt.format(m.turnover24h)} USDT">${compact(m.turnover24h)}</span>`;
       row.addEventListener('click',()=>openFocus(m.symbol)); els.coinList.appendChild(row);
     });
+    updateCoinSortHeaders();
     els.boardCount.textContent=state.markets.length;
     const coinsTab = document.querySelector('.side-tabs button[data-tab="coins"]');
     if (coinsTab) coinsTab.innerHTML = `Coins <span class="pill">${state.allMarkets.length}</span>`;
@@ -824,6 +954,7 @@
   }
 
   function wireEvents(){
+    document.querySelectorAll('.coin-sort').forEach(btn => btn.addEventListener('click', () => setCoinSort(btn.dataset.coinSort)));
     document.getElementById('toggleDensity').onclick=e=>{state.showDensity=!state.showDensity;e.currentTarget.classList.toggle('active',state.showDensity);redrawCanvases()};
     document.getElementById('toggleCascade').onclick=e=>{state.showCascade=!state.showCascade;e.currentTarget.classList.toggle('active',state.showCascade);redrawCanvases()};
     document.getElementById('marketPicker').onclick=e=>{if(e.target.dataset.category)setCategory(e.target.dataset.category)};
@@ -834,7 +965,9 @@
     document.getElementById('autoSortBtn').onclick=e=>{state.autoSort=!state.autoSort;e.currentTarget.classList.toggle('active',state.autoSort);toast(`Auto-sort ${state.autoSort?'enabled':'paused'}`)};
     document.getElementById('searchBtn').onclick=()=>{renderSearch();openModal(els.searchModal);setTimeout(()=>els.coinSearchInput.focus(),30)};
     document.getElementById('settingsBtn').onclick=()=>openModal(els.settingsModal);
-    document.getElementById('layoutBtn').onclick=()=>{state.layoutCols=state.layoutCols===3?2:state.layoutCols===2?4:3;renderBoard()};
+    document.querySelectorAll('#layoutPicker button').forEach(btn => {
+      btn.onclick = () => setChartsPerPage(Number(btn.dataset.count));
+    });
     document.getElementById('prevPage').onclick=async()=>{if(state.page>0){state.page--;await hydrateVisibleCandles();renderAll();connectVisibleWebSocket();await bootstrapOrderbooks()}};
     document.getElementById('nextPage').onclick=async()=>{const max=Math.ceil(state.markets.length/state.perPage)-1;if(state.page<max){state.page++;await hydrateVisibleCandles();renderAll();connectVisibleWebSocket();await bootstrapOrderbooks()}};
     document.querySelectorAll('.side-tabs button').forEach(btn=>btn.onclick=()=>{document.querySelectorAll('.side-tabs button').forEach(b=>b.classList.remove('active'));btn.classList.add('active');document.querySelectorAll('.tab-panel').forEach(p=>p.classList.remove('active'));document.getElementById(`${btn.dataset.tab}Tab`).classList.add('active')});
@@ -843,7 +976,7 @@
     els.coinSearchInput.oninput=e=>renderSearch(e.target.value);
     els.coinSearchInput.onkeydown=e=>{if(e.key==='Enter'){els.searchResults.querySelector('.search-result')?.click()}};
     document.addEventListener('keydown',e=>{if(e.key==='Escape')document.querySelectorAll('.modal-backdrop.open').forEach(closeModal);if(e.key==='/'&&!['INPUT','SELECT'].includes(document.activeElement.tagName)){e.preventDefault();document.getElementById('searchBtn').click()}});
-    document.getElementById('chartsPerPage').onchange=async e=>{state.perPage=+e.target.value;state.page=0;await hydrateVisibleCandles();renderAll();connectVisibleWebSocket();await bootstrapOrderbooks()};
+    document.getElementById('chartsPerPage').onchange=e=>setChartsPerPage(Number(e.target.value));
     document.getElementById('showGridLines').onchange=e=>{state.showGrid=e.target.checked;redrawCanvases()};
     document.getElementById('showVolume').onchange=e=>{state.showVolume=e.target.checked;redrawCanvases()};
     document.getElementById('compactHeaders').onchange=e=>{state.compactHeaders=e.target.checked;renderBoard()};
@@ -858,8 +991,10 @@
   }
 
   async function init(){
-    wireEvents();renderAlerts();setConnection();await loadMarkets(true);await bootstrapOrderbooks();renderAll();scheduleRefresh();
-    setTimeout(()=>toast('Live mode: all Bybit USDT markets + TradingView Lightweight Charts + L50 walls'),500);
+    wireEvents();renderAlerts();setConnection();
+    const tvReady = await ensureTradingViewCharts();
+    await loadMarkets(true);await bootstrapOrderbooks();renderAll();scheduleRefresh();
+    setTimeout(()=>toast(tvReady ? 'ScalpDeck v4.4: TradingView charts ready' : 'ScalpDeck v4.4: chart CDN blocked — canvas fallback active', !tvReady),500);
   }
 
   init();
