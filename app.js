@@ -768,6 +768,105 @@
     return {x,y};
   }
 
+  function pointSegmentDistance(px, py, ax, ay, bx, by) {
+    const dx = bx - ax, dy = by - ay;
+    const len2 = dx * dx + dy * dy;
+    if (!len2) return Math.hypot(px - ax, py - ay);
+    const t = clamp(((px - ax) * dx + (py - ay) * dy) / len2, 0, 1);
+    const x = ax + t * dx, y = ay + t * dy;
+    return Math.hypot(px - x, py - y);
+  }
+
+  function trendHitTest(item, event) {
+    const bucket = drawingBucket(item.card);
+    if (!bucket.trends.length) return null;
+    const rect = item.overlay.getBoundingClientRect();
+    const px = event.clientX - rect.left;
+    const py = event.clientY - rect.top;
+    const anchorRadius = 9;
+    const lineRadius = 7;
+    // Newest drawings get priority, like typical chart editors.
+    for (let i = bucket.trends.length - 1; i >= 0; i--) {
+      const trend = bucket.trends[i];
+      const a = drawingToCoordinate(item, trend.a);
+      const b = drawingToCoordinate(item, trend.b);
+      if (!a || !b) continue;
+      if (Math.hypot(px - a.x, py - a.y) <= anchorRadius) return { index:i, part:'a' };
+      if (Math.hypot(px - b.x, py - b.y) <= anchorRadius) return { index:i, part:'b' };
+      if (pointSegmentDistance(px, py, a.x, a.y, b.x, b.y) <= lineRadius) return { index:i, part:'line' };
+    }
+    return null;
+  }
+
+  function setSelectedTrend(item, index=null) {
+    item.selectedTrend = Number.isInteger(index) ? index : null;
+    renderDrawingsForSymbol(item.card.dataset.symbol);
+  }
+
+  function beginTrendDrag(item, event) {
+    if (item.activeTool) return false;
+    const hit = trendHitTest(item, event);
+    if (!hit) {
+      if (item.selectedTrend != null) setSelectedTrend(item, null);
+      return false;
+    }
+    const point = eventToDrawingPoint(item, event);
+    if (!point) return false;
+    const bucket = drawingBucket(item.card);
+    const trend = bucket.trends[hit.index];
+    if (!trend) return false;
+    item.selectedTrend = hit.index;
+    item.dragState = {
+      index: hit.index,
+      part: hit.part,
+      start: { time:Number(point.time), price:Number(point.price) },
+      original: {
+        a: { time:Number(trend.a.time), price:Number(trend.a.price) },
+        b: { time:Number(trend.b.time), price:Number(trend.b.price) },
+      },
+    };
+    item.card.classList.add('dragging-drawing');
+    renderDrawingsForSymbol(item.card.dataset.symbol);
+    try { item.card.setPointerCapture?.(event.pointerId); } catch (_) {}
+    event.preventDefault();
+    event.stopPropagation();
+    return true;
+  }
+
+  function moveTrendDrag(item, event) {
+    const drag = item.dragState;
+    if (!drag) return false;
+    const point = eventToDrawingPoint(item, event);
+    if (!point) return false;
+    const bucket = drawingBucket(item.card);
+    const trend = bucket.trends[drag.index];
+    if (!trend) return false;
+    const next = { time:Number(point.time), price:Number(point.price) };
+    if (drag.part === 'a' || drag.part === 'b') {
+      trend[drag.part] = next;
+    } else {
+      const dt = next.time - drag.start.time;
+      const dp = next.price - drag.start.price;
+      trend.a = { time:drag.original.a.time + dt, price:drag.original.a.price + dp };
+      trend.b = { time:drag.original.b.time + dt, price:drag.original.b.price + dp };
+    }
+    renderDrawingsForSymbol(item.card.dataset.symbol);
+    event.preventDefault();
+    event.stopPropagation();
+    return true;
+  }
+
+  function endTrendDrag(item, event) {
+    if (!item.dragState) return false;
+    item.dragState = null;
+    item.card.classList.remove('dragging-drawing');
+    try { item.card.releasePointerCapture?.(event.pointerId); } catch (_) {}
+    renderDrawingsForSymbol(item.card.dataset.symbol);
+    event.preventDefault();
+    event.stopPropagation();
+    return true;
+  }
+
   function clearUserLevelLines(item) {
     if (item.engine !== 'tradingview') return;
     for (const line of item.userLevelLines || []) {
@@ -803,11 +902,15 @@
       }
     }
 
-    for (const t of bucket.trends) {
+    for (let trendIndex = 0; trendIndex < bucket.trends.length; trendIndex++) {
+      const t = bucket.trends[trendIndex];
       const a=drawingToCoordinate(item,t.a), b=drawingToCoordinate(item,t.b); if(!a||!b) continue;
-      overlay.appendChild(svgEl('line',{x1:a.x,y1:a.y,x2:b.x,y2:b.y,class:'trend-line'}));
-      overlay.appendChild(svgEl('circle',{cx:a.x,cy:a.y,r:2.5,class:'draw-anchor'}));
-      overlay.appendChild(svgEl('circle',{cx:b.x,cy:b.y,r:2.5,class:'draw-anchor'}));
+      const selected = item.selectedTrend === trendIndex;
+      overlay.appendChild(svgEl('line',{x1:a.x,y1:a.y,x2:b.x,y2:b.y,class:`trend-line${selected ? ' selected' : ''}`}));
+      if (selected) {
+        overlay.appendChild(svgEl('circle',{cx:a.x,cy:a.y,r:4,class:'draw-anchor selected'}));
+        overlay.appendChild(svgEl('circle',{cx:b.x,cy:b.y,r:4,class:'draw-anchor selected'}));
+      }
     }
 
     for (const r of bucket.rulers) {
@@ -832,7 +935,7 @@
     if (tool === 'clear') {
       const bucket = drawingBucket(item.card);
       bucket.levels.length=0; bucket.trends.length=0; bucket.rulers.length=0;
-      item.pendingPoint=null; item.previewPoint=null;
+      item.pendingPoint=null; item.previewPoint=null; item.selectedTrend=null; item.dragState=null;
       renderDrawingsForSymbol(item.card.dataset.symbol);
       toast(`${item.card.dataset.symbol}: drawings cleared on all timeframes`);
       return;
@@ -857,6 +960,8 @@
     item.activeTool = null;
     item.pendingPoint = null;
     item.previewPoint = null;
+    item.selectedTrend = null;
+    item.dragState = null;
     item.userLevelLines = [];
     item.card.querySelectorAll('.draw-btn').forEach(btn => btn.addEventListener('click', e => {
       e.preventDefault(); e.stopPropagation(); setDrawTool(item, btn.dataset.drawTool);
@@ -875,9 +980,22 @@
       if(!item.pendingPoint) {
         item.pendingPoint={time:point.time,price:point.price}; item.previewPoint=item.pendingPoint; renderUserDrawings(item); return;
       }
-      const drawing={a:item.pendingPoint,b:{time:point.time,price:point.price}};
-      if(item.activeTool==='trend') bucket.trends.push(drawing); else if(item.activeTool==='ruler') bucket.rulers.push(drawing);
-      item.pendingPoint=null; item.previewPoint=null; renderDrawingsForSymbol(item.card.dataset.symbol);
+      const drawing={id:`d-${Date.now()}-${Math.random().toString(36).slice(2,7)}`,a:item.pendingPoint,b:{time:point.time,price:point.price}};
+      if(item.activeTool==='trend') {
+        bucket.trends.push(drawing);
+        item.selectedTrend=bucket.trends.length-1;
+        item.pendingPoint=null; item.previewPoint=null;
+        // Trend is one-shot: one toolbar click creates exactly one completed line.
+        // Return to cursor so the line can immediately be selected/moved.
+        item.activeTool=null;
+        item.overlay.classList.remove('drawing-active');
+        item.card.querySelectorAll('.draw-btn').forEach(btn => btn.classList.toggle('active', btn.dataset.drawTool==='cursor'));
+        const hint=item.card.querySelector('.draw-hint'); if(hint){hint.textContent='';hint.classList.remove('show');}
+      } else if(item.activeTool==='ruler') {
+        bucket.rulers.push(drawing);
+        item.pendingPoint=null; item.previewPoint=null; item.selectedTrend=null;
+      }
+      renderDrawingsForSymbol(item.card.dataset.symbol);
     });
     item.overlay.addEventListener('mousemove', e => {
       if(!item.activeTool || !item.pendingPoint) return;
@@ -885,6 +1003,23 @@
       item.previewPoint={time:point.time,price:point.price}; renderUserDrawings(item);
     });
     item.overlay.addEventListener('dblclick', e => { if(item.activeTool){e.preventDefault();e.stopPropagation();item.pendingPoint=null;item.previewPoint=null;renderUserDrawings(item);} });
+
+    // In cursor mode, keep normal chart navigation unless the pointer is actually on a trend line.
+    // Capture listeners let us select/drag drawings without putting an invisible event-blocking layer over the chart.
+    item.card.addEventListener('pointerdown', e => {
+      if (e.button !== 0 || item.activeTool) return;
+      beginTrendDrag(item, e);
+    }, true);
+    item.card.addEventListener('pointermove', e => {
+      if (item.dragState) { moveTrendDrag(item, e); return; }
+      if (item.activeTool) return;
+      const hit = trendHitTest(item, e);
+      item.card.classList.toggle('drawing-hover', !!hit);
+    }, true);
+    item.card.addEventListener('pointerup', e => { if (item.dragState) endTrendDrag(item, e); }, true);
+    item.card.addEventListener('pointercancel', e => { if (item.dragState) endTrendDrag(item, e); }, true);
+    item.card.addEventListener('pointerleave', () => { if (!item.dragState) item.card.classList.remove('drawing-hover'); }, true);
+
     item.drawToolsReady=true;
     renderUserDrawings(item);
   }
@@ -1218,7 +1353,24 @@
     document.querySelectorAll('.modal-backdrop').forEach(bg=>bg.addEventListener('mousedown',e=>{if(e.target===bg)closeModal(bg)}));
     els.coinSearchInput.oninput=e=>renderSearch(e.target.value);
     els.coinSearchInput.onkeydown=e=>{if(e.key==='Enter'){els.searchResults.querySelector('.search-result')?.click()}};
-    document.addEventListener('keydown',e=>{if(e.key==='Escape')document.querySelectorAll('.modal-backdrop.open').forEach(closeModal);if(e.key==='/'&&!['INPUT','SELECT'].includes(document.activeElement.tagName)){e.preventDefault();document.getElementById('searchBtn').click()}});
+    document.addEventListener('keydown',e=>{
+      if(e.key==='Escape'){
+        document.querySelectorAll('.modal-backdrop.open').forEach(closeModal);
+        chartRegistry.forEach(item=>{ if(item.activeTool){ item.pendingPoint=null; item.previewPoint=null; renderUserDrawings(item); } else if(item.selectedTrend!=null){ item.selectedTrend=null; renderUserDrawings(item); } });
+      }
+      if((e.key==='Delete'||e.key==='Backspace')&&!['INPUT','TEXTAREA','SELECT'].includes(document.activeElement.tagName)){
+        let removed=false;
+        chartRegistry.forEach(item=>{
+          if(item.selectedTrend!=null){
+            const bucket=drawingBucket(item.card);
+            if(bucket.trends[item.selectedTrend]){ bucket.trends.splice(item.selectedTrend,1); removed=true; }
+            item.selectedTrend=null;
+          }
+        });
+        if(removed){ e.preventDefault(); chartRegistry.forEach(item=>renderUserDrawings(item)); toast('Trend line deleted'); }
+      }
+      if(e.key==='/'&&!['INPUT','SELECT'].includes(document.activeElement.tagName)){e.preventDefault();document.getElementById('searchBtn').click()}
+    });
     document.getElementById('chartsPerPage').onchange=e=>setChartsPerPage(Number(e.target.value));
     document.getElementById('showGridLines').onchange=e=>{state.showGrid=e.target.checked;redrawCanvases()};
     document.getElementById('showVolume').onchange=e=>{state.showVolume=e.target.checked;redrawCanvases()};

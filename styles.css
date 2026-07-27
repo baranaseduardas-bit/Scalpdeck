@@ -92,3 +92,8 @@ button{cursor:pointer}
 .drawing-overlay .trend-line{stroke:#62a8ff;stroke-width:1.4;vector-effect:non-scaling-stroke}.drawing-overlay .ruler-line{stroke:#f1b84b;stroke-width:1.4;vector-effect:non-scaling-stroke}.drawing-overlay .ruler-guide{stroke:#f1b84b;stroke-width:1;stroke-dasharray:4 4;opacity:.58;vector-effect:non-scaling-stroke}.drawing-overlay .draft-line{stroke:#b6c0cc;stroke-width:1;stroke-dasharray:5 4;opacity:.8;vector-effect:non-scaling-stroke}.drawing-overlay .draw-anchor{fill:#101216;stroke:#dce2e9;stroke-width:1.2;vector-effect:non-scaling-stroke}.drawing-overlay .ruler-label,.drawing-overlay .draw-label{fill:#f2c76f;font:600 9px system-ui,sans-serif;paint-order:stroke;stroke:#0f1114;stroke-width:3px;stroke-linejoin:round}.drawing-overlay .user-level-line{stroke:#f1b84b;stroke-width:1.2;vector-effect:non-scaling-stroke}
 .chart-watermark,.price-tag{z-index:4}.draw-toolbar~.chart-watermark{pointer-events:none}
 @media(max-width:950px){.draw-toolbar{left:3px;top:4px;gap:2px;padding:2px}.draw-btn{width:20px;height:20px;font-size:11px;line-height:18px}.draw-hint{left:31px;top:4px}}
+/* v5.1 movable trend lines */
+.chart-card.drawing-hover{cursor:grab}
+.chart-card.dragging-drawing{cursor:grabbing!important;user-select:none}
+.drawing-overlay .trend-line.selected{stroke:#8ec3ff;stroke-width:2.2;filter:drop-shadow(0 0 2px rgba(98,168,255,.65))}
+.drawing-overlay .draw-anchor.selected{fill:#62a8ff;stroke:#fff;stroke-width:1.4}

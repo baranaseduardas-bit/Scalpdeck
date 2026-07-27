@@ -1,8 +1,8 @@
-# ScalpDeck v5.0
+# ScalpDeck v5.1
 
 Live Bybit USDT Spot + Perpetual dashboard.
 
-Changes in v5.0:
+Changes in v5.1:
 - 6 charts by default in a fixed 3×2 grid
 - 9 charts = 3×3
 - 12 charts = 4×3
@@ -56,10 +56,20 @@ Vercel Functions are pinned to Singapore (`sin1`). This matters because Vercel d
 After deployment, open `/api/health`. It should report `"ok": true` and normally `"region": "sin1"`.
 
 
-## v5.0 chart drawing tools
+## v5.1 chart drawing tools
 Each chart now includes a left-side toolbar: Cursor, Ruler, Horizontal Level, Trend Line, and Clear Drawings. Ruler and Trend Line use two clicks; Horizontal Level uses one click. Drawings are kept per market/timeframe for the current browser session.
 
 
-## v5.0 shared drawings
+## v5.1 shared drawings
 
 Drawings are shared by market and symbol across the multi-timeframe focus view. A horizontal level drawn on 1m appears on 5m, 15m and 1h immediately. Trend lines and ruler measurements also share the same absolute time/price anchors and render on any timeframe whose loaded candle range contains those anchors. Clearing drawings clears them for that symbol across all timeframes in the current browser session.
+
+
+## v5.1 trend-line editing
+- Trend tool creates exactly one line for each two-click placement.
+- Trend Line is one-shot: click the tool, place two endpoints, and it returns to Cursor mode. Click Trend Line again for the next independent line.
+- In Cursor mode, drag either endpoint to reshape a line, or drag the line body to move the whole line.
+- Selected trend lines can be removed with Delete/Backspace.
+- Shared-drawing behaviour across 1m/5m/15m/1h is preserved.
+
+- A newly completed trend line remains selected, ready to drag immediately.
