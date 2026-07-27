@@ -1,30 +1,4 @@
-# ScalpDeck v4 — Vercel live build
-
-This build fixes the `0 markets` problem seen when the browser tries to call Bybit REST directly from GitHub Pages.
-
-## Architecture
-
-- Frontend: static HTML/CSS/JS
-- Charts: TradingView Lightweight Charts
-- REST bootstrap: same-origin Vercel serverless proxy (`/api/*`) -> Bybit V5
-- Live stream: direct Bybit public WebSocket for tickers, candles and L50 order books
-- Markets: all active USDT Spot pairs and all active USDT Linear Perpetual contracts
-
-No Bybit API key is required for public market data.
-
-## Deploy
-
-1. Upload all files in this folder to the root of the GitHub repository.
-2. Import that GitHub repository into Vercel.
-3. Deploy with the default framework setting (Other / no build command).
-4. Open the Vercel URL. The app will call `/api/instruments-info`, `/api/tickers`, `/api/kline`, and `/api/orderbook` on the same domain.
-5. Connect a custom domain in Vercel only after the deployment is working.
-
-GitHub Pages alone cannot execute the `/api/*.js` serverless functions, so use the Vercel URL for v4.
-
-## v4.1 interface update
-
-- Board defaults to 6 charts in a 3 × 2 grid.
-- One-click 6 / 9 / 12 chart layouts in the top bar.
-- 9 charts use 3 × 3; 12 charts use 4 × 3.
-- Coins panel is independently scrollable so the complete Bybit USDT universe remains accessible.
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "framework": null
+}
