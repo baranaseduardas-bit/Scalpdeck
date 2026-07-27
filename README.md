@@ -1,3 +1,15 @@
+# ScalpDeck v5.0
+
+Live Bybit USDT Spot + Perpetual dashboard.
+
+Changes in v5.0:
+- 6 charts by default in a fixed 3×2 grid
+- 9 charts = 3×3
+- 12 charts = 4×3
+- chart cards no longer stretch vertically
+- Coins table has its own permanent vertical scrollbar
+- board volume filter defaults to Any so the first page fills all 6 chart slots
+
 # ScalpDeck v4.4 — Vercel live build
 
 This build fixes the `0 markets` problem seen when the browser tries to call Bybit REST directly from GitHub Pages.
@@ -42,3 +54,12 @@ The Coins panel supports independent sorting by 24h percentage change and 24h US
 Vercel Functions are pinned to Singapore (`sin1`). This matters because Vercel defaults new Functions to Washington, D.C. (`iad1`), while Bybit rejects API requests originating from U.S. IP addresses. The 24-symbol list is only a diagnostic fallback; a healthy deployment should load the complete active USDT Spot or Linear Perpetual universe.
 
 After deployment, open `/api/health`. It should report `"ok": true` and normally `"region": "sin1"`.
+
+
+## v5.0 chart drawing tools
+Each chart now includes a left-side toolbar: Cursor, Ruler, Horizontal Level, Trend Line, and Clear Drawings. Ruler and Trend Line use two clicks; Horizontal Level uses one click. Drawings are kept per market/timeframe for the current browser session.
+
+
+## v5.0 shared drawings
+
+Drawings are shared by market and symbol across the multi-timeframe focus view. A horizontal level drawn on 1m appears on 5m, 15m and 1h immediately. Trend lines and ruler measurements also share the same absolute time/price anchors and render on any timeframe whose loaded candle range contains those anchors. Clearing drawings clears them for that symbol across all timeframes in the current browser session.

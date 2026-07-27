@@ -23,7 +23,7 @@
     sortBy: 'turnover',
     coinSortKey: 'turnover',
     coinSortDir: 'desc',
-    minVolume: 50_000_000,
+    minVolume: 0,
     densityThreshold: 250_000,
     densityMaxDistance: 4,
     showDensity: true,
@@ -52,6 +52,7 @@
     lastMessageAt: 0,
     focusSymbol: null,
     chartSeq: 0,
+    drawings: new Map(),
   };
 
   const ids = [
@@ -536,6 +537,7 @@
     const item = chartRegistry.get(id);
     if (item) {
       try { item.resizeObserver?.disconnect(); } catch (_) {}
+      try { clearUserLevelLines(item); } catch (_) {}
       try { item.chart?.remove?.(); } catch (_) {}
       chartRegistry.delete(id);
     }
@@ -586,9 +588,20 @@
           ${opts.focus ? '' : '<button class="tiny-btn focus-btn" title="Focus mode">⛶</button>'}
         </span>
       </div>
-      <div class="chart-canvas tv-chart" aria-label="TradingView Lightweight Chart"></div>
-      <div class="chart-watermark">${m.symbol.replace('USDT','')}</div>
-      <div class="price-tag live-price">${priceFmt(m.lastPrice)}</div>
+      <div class="chart-stage">
+        <div class="draw-toolbar" role="toolbar" aria-label="Chart drawing tools">
+          <button class="draw-btn active" data-draw-tool="cursor" title="Cursor / chart navigation">↖</button>
+          <button class="draw-btn" data-draw-tool="ruler" title="Ruler: click two points">↔</button>
+          <button class="draw-btn" data-draw-tool="level" title="Horizontal level: click a price">━</button>
+          <button class="draw-btn" data-draw-tool="trend" title="Trend line: click two points">╱</button>
+          <button class="draw-btn clear-drawings" data-draw-tool="clear" title="Clear drawings">×</button>
+        </div>
+        <div class="chart-canvas tv-chart" aria-label="TradingView Lightweight Chart"></div>
+        <svg class="drawing-overlay" aria-hidden="true"></svg>
+        <div class="draw-hint" aria-hidden="true"></div>
+        <div class="chart-watermark">${m.symbol.replace('USDT','')}</div>
+        <div class="price-tag live-price">${priceFmt(m.lastPrice)}</div>
+      </div>
     `;
     card.querySelector('.star-btn')?.addEventListener('click', e => { e.stopPropagation(); toggleStar(m.symbol); });
     card.querySelector('.focus-btn')?.addEventListener('click', e => { e.stopPropagation(); openFocus(m.symbol); });
@@ -656,6 +669,226 @@
     }]);
   }
 
+  function drawingKey(card) {
+    // Drawings are shared by market + symbol so they appear on every timeframe.
+    return `${state.category}:${card.dataset.symbol}`;
+  }
+
+  function drawingBucket(card) {
+    const key = drawingKey(card);
+    if (!state.drawings.has(key)) state.drawings.set(key, { levels: [], trends: [], rulers: [] });
+    return state.drawings.get(key);
+  }
+
+  function renderDrawingsForSymbol(symbol) {
+    document.querySelectorAll(`.chart-card[data-symbol="${CSS.escape(symbol)}"]`).forEach(card => {
+      const item = chartRegistry.get(card.dataset.chartId);
+      if (item) renderUserDrawings(item);
+    });
+  }
+
+  function nearestTimeCoordinate(item, pointTime) {
+    if (item.engine !== 'tradingview') return null;
+    let x = item.chart.timeScale().timeToCoordinate(pointTime);
+    if (Number.isFinite(Number(x))) return Number(x);
+    // A drawing made on 1m may land between candle timestamps on 5m/15m/1h.
+    // Snap to the nearest candle on that timeframe so the same drawing remains visible.
+    const candles = state.candles.get(`${item.card.dataset.symbol}:${item.card.dataset.tf}`) || [];
+    if (!candles.length) return null;
+    const target = Number(pointTime);
+    const firstTime = Math.floor(candles[0].t / 1000);
+    const lastTime = Math.floor(candles[candles.length - 1].t / 1000);
+    if (target < firstTime || target > lastTime) return null;
+    let nearest = candles[0];
+    let best = Math.abs(Math.floor(nearest.t / 1000) - target);
+    for (let i = 1; i < candles.length; i++) {
+      const d = Math.abs(Math.floor(candles[i].t / 1000) - target);
+      if (d < best) { best = d; nearest = candles[i]; }
+    }
+    x = item.chart.timeScale().timeToCoordinate(Math.floor(nearest.t / 1000));
+    return Number.isFinite(Number(x)) ? Number(x) : null;
+  }
+
+  function svgEl(name, attrs={}) {
+    const el = document.createElementNS('http://www.w3.org/2000/svg', name);
+    for (const [k,v] of Object.entries(attrs)) el.setAttribute(k, String(v));
+    return el;
+  }
+
+  function fallbackGeometry(item, candles) {
+    const rect = item.container.getBoundingClientRect();
+    const width = Math.max(120, Math.floor(rect.width));
+    const height = Math.max(100, Math.floor(rect.height));
+    const left=8,right=42,top=8,bottom=state.showVolume?42:18;
+    const cw=Math.max(10,width-left-right), ch=Math.max(10,height-top-bottom);
+    const shown=candles.slice(-90);
+    if (!shown.length) return null;
+    let min=Math.min(...shown.map(c=>c.l)), max=Math.max(...shown.map(c=>c.h));
+    const pad=(max-min||Math.max(max*.002,.000001))*.08; min-=pad; max+=pad;
+    return { width,height,left,right,top,bottom,cw,ch,shown,min,max };
+  }
+
+  function eventToDrawingPoint(item, event) {
+    const overlay = item.overlay;
+    if (!overlay) return null;
+    const rect = overlay.getBoundingClientRect();
+    const x = clamp(event.clientX - rect.left, 0, rect.width);
+    const y = clamp(event.clientY - rect.top, 0, rect.height);
+    if (item.engine === 'tradingview') {
+      const price = item.candles.coordinateToPrice(y);
+      const time = item.chart.timeScale().coordinateToTime(x);
+      if (!Number.isFinite(Number(price)) || time == null) return null;
+      return { x, y, price: Number(price), time };
+    }
+    const candles = state.candles.get(`${item.card.dataset.symbol}:${item.card.dataset.tf}`) || [];
+    const g = fallbackGeometry(item, candles);
+    if (!g) return null;
+    const price = g.max - ((y-g.top)/g.ch)*(g.max-g.min);
+    const idx = Math.round(clamp((x-g.left)/g.cw,0,1) * Math.max(0,g.shown.length-1));
+    const c = g.shown[idx];
+    if (!c) return null;
+    return { x, y, price, time: Math.floor(c.t/1000) };
+  }
+
+  function drawingToCoordinate(item, point) {
+    if (!point) return null;
+    if (item.engine === 'tradingview') {
+      const x = nearestTimeCoordinate(item, point.time);
+      const y = item.candles.priceToCoordinate(point.price);
+      if (!Number.isFinite(Number(x)) || !Number.isFinite(Number(y))) return null;
+      return { x:Number(x), y:Number(y) };
+    }
+    const candles = state.candles.get(`${item.card.dataset.symbol}:${item.card.dataset.tf}`) || [];
+    const g = fallbackGeometry(item, candles);
+    if (!g) return null;
+    const idx = g.shown.findIndex(c => Math.floor(c.t/1000) >= Number(point.time));
+    const i = idx < 0 ? g.shown.length-1 : idx;
+    const x = g.left + (i/Math.max(1,g.shown.length-1))*g.cw;
+    const y = g.top + (g.max-point.price)/(g.max-g.min)*g.ch;
+    return {x,y};
+  }
+
+  function clearUserLevelLines(item) {
+    if (item.engine !== 'tradingview') return;
+    for (const line of item.userLevelLines || []) {
+      try { item.candles.removePriceLine(line); } catch (_) {}
+    }
+    item.userLevelLines = [];
+  }
+
+  function renderUserDrawings(item) {
+    if (!item?.overlay) return;
+    const bucket = drawingBucket(item.card);
+    const overlay = item.overlay;
+    const rect = item.container.getBoundingClientRect();
+    overlay.setAttribute('viewBox', `0 0 ${Math.max(1,rect.width)} ${Math.max(1,rect.height)}`);
+    overlay.innerHTML = '';
+
+    clearUserLevelLines(item);
+    if (item.engine === 'tradingview') {
+      item.userLevelLines = bucket.levels.map(level => item.candles.createPriceLine({
+        price: level.price,
+        color: '#f1b84b',
+        lineWidth: 1,
+        lineStyle: LightweightCharts.LineStyle.Solid,
+        axisLabelVisible: true,
+        title: `LEVEL ${priceFmt(level.price)}`,
+      }));
+    } else {
+      for (const level of bucket.levels) {
+        const c = drawingToCoordinate(item,{price:level.price,time:(state.candles.get(`${item.card.dataset.symbol}:${item.card.dataset.tf}`)||[]).at(-1)?.t/1000});
+        if (!c) continue;
+        overlay.appendChild(svgEl('line',{x1:0,y1:c.y,x2:rect.width,y2:c.y,class:'user-level-line'}));
+        const text=svgEl('text',{x:26,y:Math.max(10,c.y-4),class:'draw-label'}); text.textContent=`LEVEL ${priceFmt(level.price)}`; overlay.appendChild(text);
+      }
+    }
+
+    for (const t of bucket.trends) {
+      const a=drawingToCoordinate(item,t.a), b=drawingToCoordinate(item,t.b); if(!a||!b) continue;
+      overlay.appendChild(svgEl('line',{x1:a.x,y1:a.y,x2:b.x,y2:b.y,class:'trend-line'}));
+      overlay.appendChild(svgEl('circle',{cx:a.x,cy:a.y,r:2.5,class:'draw-anchor'}));
+      overlay.appendChild(svgEl('circle',{cx:b.x,cy:b.y,r:2.5,class:'draw-anchor'}));
+    }
+
+    for (const r of bucket.rulers) {
+      const a=drawingToCoordinate(item,r.a), b=drawingToCoordinate(item,r.b); if(!a||!b) continue;
+      overlay.appendChild(svgEl('line',{x1:a.x,y1:a.y,x2:b.x,y2:b.y,class:'ruler-line'}));
+      overlay.appendChild(svgEl('line',{x1:a.x,y1:a.y,x2:b.x,y2:a.y,class:'ruler-guide'}));
+      overlay.appendChild(svgEl('line',{x1:b.x,y1:a.y,x2:b.x,y2:b.y,class:'ruler-guide'}));
+      const diff=r.b.price-r.a.price, pc=r.a.price?diff/r.a.price*100:0;
+      const label=svgEl('text',{x:(a.x+b.x)/2,y:Math.max(12,Math.min(a.y,b.y)-7),class:'ruler-label','text-anchor':'middle'});
+      label.textContent=`${diff>=0?'+':''}${priceFmt(diff)}  (${pc>=0?'+':''}${pc.toFixed(2)}%)`;
+      overlay.appendChild(label);
+    }
+
+    if (item.pendingPoint && item.previewPoint && ['trend','ruler'].includes(item.activeTool)) {
+      const a=drawingToCoordinate(item,item.pendingPoint), b=drawingToCoordinate(item,item.previewPoint);
+      if(a&&b) overlay.appendChild(svgEl('line',{x1:a.x,y1:a.y,x2:b.x,y2:b.y,class:'draft-line'}));
+    }
+  }
+
+  function setDrawTool(item, tool) {
+    if (!item) return;
+    if (tool === 'clear') {
+      const bucket = drawingBucket(item.card);
+      bucket.levels.length=0; bucket.trends.length=0; bucket.rulers.length=0;
+      item.pendingPoint=null; item.previewPoint=null;
+      renderDrawingsForSymbol(item.card.dataset.symbol);
+      toast(`${item.card.dataset.symbol}: drawings cleared on all timeframes`);
+      return;
+    }
+    item.activeTool = tool === 'cursor' ? null : tool;
+    item.pendingPoint = null;
+    item.previewPoint = null;
+    item.card.querySelectorAll('.draw-btn').forEach(btn => btn.classList.toggle('active', (tool==='cursor' && btn.dataset.drawTool==='cursor') || (tool!=='cursor' && btn.dataset.drawTool===tool)));
+    item.overlay.classList.toggle('drawing-active', !!item.activeTool);
+    const hint=item.card.querySelector('.draw-hint');
+    if (hint) {
+      hint.textContent = tool==='level' ? 'Click a price for horizontal level' : tool==='trend' ? 'Click two points for trend line' : tool==='ruler' ? 'Click two points to measure' : '';
+      hint.classList.toggle('show', !!item.activeTool);
+    }
+    renderUserDrawings(item);
+  }
+
+  function setupDrawingTools(item) {
+    if (!item || item.drawToolsReady) return;
+    item.overlay = item.card.querySelector('.drawing-overlay');
+    if (!item.overlay) return;
+    item.activeTool = null;
+    item.pendingPoint = null;
+    item.previewPoint = null;
+    item.userLevelLines = [];
+    item.card.querySelectorAll('.draw-btn').forEach(btn => btn.addEventListener('click', e => {
+      e.preventDefault(); e.stopPropagation(); setDrawTool(item, btn.dataset.drawTool);
+    }));
+    item.overlay.addEventListener('click', e => {
+      e.preventDefault(); e.stopPropagation();
+      if (!item.activeTool) return;
+      const point=eventToDrawingPoint(item,e); if(!point) return;
+      const bucket=drawingBucket(item.card);
+      if(item.activeTool==='level') {
+        bucket.levels.push({price:point.price});
+        renderDrawingsForSymbol(item.card.dataset.symbol);
+        toast(`${item.card.dataset.symbol} level shared across all timeframes: ${priceFmt(point.price)}`);
+        return;
+      }
+      if(!item.pendingPoint) {
+        item.pendingPoint={time:point.time,price:point.price}; item.previewPoint=item.pendingPoint; renderUserDrawings(item); return;
+      }
+      const drawing={a:item.pendingPoint,b:{time:point.time,price:point.price}};
+      if(item.activeTool==='trend') bucket.trends.push(drawing); else if(item.activeTool==='ruler') bucket.rulers.push(drawing);
+      item.pendingPoint=null; item.previewPoint=null; renderDrawingsForSymbol(item.card.dataset.symbol);
+    });
+    item.overlay.addEventListener('mousemove', e => {
+      if(!item.activeTool || !item.pendingPoint) return;
+      const point=eventToDrawingPoint(item,e); if(!point)return;
+      item.previewPoint={time:point.time,price:point.price}; renderUserDrawings(item);
+    });
+    item.overlay.addEventListener('dblclick', e => { if(item.activeTool){e.preventDefault();e.stopPropagation();item.pendingPoint=null;item.previewPoint=null;renderUserDrawings(item);} });
+    item.drawToolsReady=true;
+    renderUserDrawings(item);
+  }
+
   function drawFallbackChart(item, candles, market) {
     const canvas = item.canvas;
     const container = item.container;
@@ -699,7 +932,9 @@
     resizeObserver.observe(container);
     item.resizeObserver=resizeObserver;
     chartRegistry.set(card.dataset.chartId,item);
+    setupDrawingTools(item);
     drawFallbackChart(item,candles,market);
+    renderUserDrawings(item);
     return item;
   }
 
@@ -748,14 +983,16 @@
       markerApi = LightweightCharts.createSeriesMarkers(candleSeries, []);
     }
 
-    const item = { engine:'tradingview', chart, candles: candleSeries, volume: volumeSeries, markerApi, densityLines: [], card, container };
+    const item = { engine:'tradingview', chart, candles: candleSeries, volume: volumeSeries, markerApi, densityLines: [], userLevelLines: [], card, container };
     applyDensityLines(item, market);
     applyCascadeMarker(item, candles);
     chart.timeScale().fitContent();
+    setupDrawingTools(item);
+    try { chart.timeScale().subscribeVisibleLogicalRangeChange(() => requestAnimationFrame(() => renderUserDrawings(item))); } catch (_) {}
 
     const resizeObserver = new ResizeObserver(entries => {
       const r = entries[0]?.contentRect;
-      if (r?.width > 20 && r?.height > 20) chart.resize(Math.floor(r.width), Math.floor(r.height));
+      if (r?.width > 20 && r?.height > 20) { chart.resize(Math.floor(r.width), Math.floor(r.height)); requestAnimationFrame(() => renderUserDrawings(item)); }
     });
     resizeObserver.observe(container);
     item.resizeObserver = resizeObserver;
@@ -777,7 +1014,7 @@
     let item = chartRegistry.get(card.dataset.chartId);
     if (!item) item = createTradingViewChart(card, candles, m);
     if (!item) return;
-    if (item.engine === 'canvas') { drawFallbackChart(item, candles, m); return; }
+    if (item.engine === 'canvas') { drawFallbackChart(item, candles, m); renderUserDrawings(item); return; }
     item.chart.applyOptions({
       grid: { vertLines: { visible: state.showGrid, color: '#1a1e24' }, horzLines: { visible: state.showGrid, color: '#1a1e24' } },
       rightPriceScale: { scaleMargins: { top: .08, bottom: state.showVolume ? .24 : .08 } },
@@ -795,6 +1032,7 @@
     }
     applyDensityLines(item, m);
     applyCascadeMarker(item, candles);
+    renderUserDrawings(item);
   }
 
   function redrawCanvases() {
