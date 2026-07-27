@@ -62,9 +62,9 @@
 
       <div class="top-actions">
         <div class="segmented layout-picker" id="layoutPicker" aria-label="Charts per page">
-          <button data-count="6" class="active" title="6 charts">6</button>
-          <button data-count="9" title="9 charts">9</button>
-          <button data-count="12" title="12 charts">12</button>
+          <button data-count="6" class="active" title="6 charts — 3 × 2">6</button>
+          <button data-count="9" title="9 charts — 3 × 3">9</button>
+          <button data-count="12" title="12 charts — 4 × 3">12</button>
         </div>
         <button class="icon-btn" id="searchBtn" title="Search coin (/) ">⌕</button>
         <button class="icon-btn" id="settingsBtn" title="Settings">⚙</button>
@@ -96,7 +96,7 @@
 
         <section id="coinsTab" class="tab-panel active">
           <div class="table-head coin-row">
-            <span>Ticker</span><button class="coin-sort" data-coin-sort="change" type="button" title="Sort 24h change: highest / lowest">24h <b class="sort-arrow">↕</b></button><span>Range</span><span>NATR</span><button class="coin-sort" data-coin-sort="volume" type="button" title="Sort 24h USDT volume: highest / lowest">Vol <b class="sort-arrow">↕</b></button>
+            <span>Ticker</span><span>24h</span><span>Range</span><span>NATR</span><span>Vol</span>
           </div>
           <div id="coinList" class="coin-list"></div>
         </section>
