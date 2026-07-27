@@ -61,8 +61,12 @@
       </div>
 
       <div class="top-actions">
+        <div class="segmented layout-picker" id="layoutPicker" aria-label="Charts per page">
+          <button data-count="6" class="active" title="6 charts">6</button>
+          <button data-count="9" title="9 charts">9</button>
+          <button data-count="12" title="12 charts">12</button>
+        </div>
         <button class="icon-btn" id="searchBtn" title="Search coin (/) ">⌕</button>
-        <button class="icon-btn" id="layoutBtn" title="Change grid">⊞</button>
         <button class="icon-btn" id="settingsBtn" title="Settings">⚙</button>
         <button class="avatar-btn" title="Live public Bybit data">LIVE</button>
       </div>
@@ -92,7 +96,7 @@
 
         <section id="coinsTab" class="tab-panel active">
           <div class="table-head coin-row">
-            <span>Ticker</span><span>24h</span><span>Range</span><span>NATR</span><span>Vol</span>
+            <span>Ticker</span><button class="coin-sort" data-coin-sort="change" type="button" title="Sort 24h change: highest / lowest">24h <b class="sort-arrow">↕</b></button><span>Range</span><span>NATR</span><button class="coin-sort" data-coin-sort="volume" type="button" title="Sort 24h USDT volume: highest / lowest">Vol <b class="sort-arrow">↕</b></button>
           </div>
           <div id="coinList" class="coin-list"></div>
         </section>
@@ -132,7 +136,7 @@
       <div class="settings-grid">
         <section>
           <h3>Board</h3>
-          <label>Charts per page <select id="chartsPerPage"><option>4</option><option selected>6</option><option>9</option><option>12</option></select></label>
+          <label>Charts per page <select id="chartsPerPage"><option selected>6</option><option>9</option><option>12</option></select></label>
           <label><input type="checkbox" id="showGridLines" checked /> Grid lines</label>
           <label><input type="checkbox" id="showVolume" checked /> Volume bars</label>
           <label><input type="checkbox" id="compactHeaders" /> Compact headers</label>

@@ -21,3 +21,12 @@ No Bybit API key is required for public market data.
 5. Connect a custom domain in Vercel only after the deployment is working.
 
 GitHub Pages alone cannot execute the `/api/*.js` serverless functions, so use the Vercel URL for v4.
+
+
+## Board layouts
+The main dashboard starts with 6 charts and supports 6 / 9 / 12 chart layouts from the top bar or Settings. Layouts are fixed to 3×2, 3×3 and 4×3 respectively.
+
+
+## v4.2 coin-list sorting
+
+The Coins panel supports independent sorting by 24h percentage change and 24h USDT turnover. Click **24h** or **Vol** to toggle highest-to-lowest / lowest-to-highest.
