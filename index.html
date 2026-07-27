@@ -4,7 +4,7 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
   <title>ScalpDeck Live — Bybit Spot & Perpetual Screener</title>
-  <meta name="description" content="Live Bybit Spot and Perpetual multi-chart crypto screener using public WebSocket order books and candles." />
+  <meta name="description" content="Live Bybit USDT Spot and Perpetual multi-chart screener using TradingView Lightweight Charts and Bybit public WebSocket order books." />
   <link rel="stylesheet" href="styles.css" />
 </head>
 <body>
@@ -85,7 +85,7 @@
 
       <aside class="side-panel" id="sidePanel">
         <nav class="side-tabs">
-          <button class="active" data-tab="coins">Coins</button>
+          <button class="active" data-tab="coins">Coins <span class="pill">—</span></button>
           <button data-tab="densities">Density map</button>
           <button data-tab="alerts">Alerts <span id="alertCount" class="pill">3</span></button>
         </nav>
@@ -114,6 +114,7 @@
         </section>
       </aside>
     </main>
+    <div class="tv-attribution">TradingView Lightweight Charts™ · Copyright © 2025 TradingView, Inc. · <a href="https://www.tradingview.com/" target="_blank" rel="noopener noreferrer">TradingView</a></div>
   </div>
 
   <div class="modal-backdrop" id="searchModal" aria-hidden="true">
@@ -174,6 +175,7 @@
 
   <div id="toastStack" class="toast-stack"></div>
 
+  <script src="https://unpkg.com/lightweight-charts@5.2.0/dist/lightweight-charts.standalone.production.js"></script>
   <script src="app.js"></script>
 </body>
 </html>

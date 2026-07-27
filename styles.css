@@ -68,3 +68,10 @@ button{cursor:pointer}
 .latency-label{font-size:8px;color:#666f7a;min-width:42px;text-align:right}.connection-badge.live-ws i{box-shadow:0 0 8px rgba(57,201,129,.55)}
 .live-note{font-size:8px;color:#6f7782}.density-chip strong{font-size:7px;opacity:.8}.market-type-tag{font-size:7px;border:1px solid #2e343d;padding:1px 3px;border-radius:2px;color:#727b86}
 .chart-card .live-price{top:29px;font-weight:700}.chart-head.compact~.live-price{top:23px}
+
+/* TradingView Lightweight Charts integration */
+.tv-chart{position:relative;flex:1;min-height:80px;overflow:hidden}
+.tv-chart canvas{display:block}
+.tv-attribution{position:fixed;right:8px;bottom:2px;z-index:40;font-size:7px;line-height:12px;color:#555d68;pointer-events:none;opacity:.72}
+.tv-attribution a{color:#69727f;text-decoration:none;pointer-events:auto}
+.side-tabs .pill{margin-left:3px;min-width:16px;padding:1px 4px}

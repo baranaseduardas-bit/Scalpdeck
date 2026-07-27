@@ -11,6 +11,8 @@
     category: 'linear',
     markets: [],
     allMarkets: [],
+    qualifiedSymbols: new Set(),
+    instrumentMeta: new Map(),
     candles: new Map(),
     books: new Map(),
     bookDensities: new Map(),
@@ -46,6 +48,8 @@
     ],
     previousPrices: new Map(),
     lastMessageAt: 0,
+    focusSymbol: null,
+    chartSeq: 0,
   };
 
   const ids = [
@@ -53,6 +57,7 @@
     'searchModal','coinSearchInput','searchResults','settingsModal','focusModal','focusGrid','focusTitle','alertModal','toastStack','latencyLabel'
   ];
   const els = Object.fromEntries(ids.map(id => [id, document.getElementById(id)]));
+  const chartRegistry = new Map();
 
   const fmt = new Intl.NumberFormat('en-GB', { maximumFractionDigits: 2 });
   const compact = n => {
@@ -132,16 +137,50 @@
     };
   }
 
+  async function fetchInstrumentUniverse(category) {
+    const instruments = [];
+    if (category === 'spot') {
+      const json = await fetchJSON(`${API}/instruments-info?category=spot&status=Trading`, 9000);
+      instruments.push(...(json?.result?.list || []));
+    } else {
+      let cursor = '';
+      let guard = 0;
+      do {
+        const url = new URL(`${API}/instruments-info`);
+        url.searchParams.set('category', 'linear');
+        url.searchParams.set('status', 'Trading');
+        url.searchParams.set('limit', '1000');
+        if (cursor) url.searchParams.set('cursor', cursor);
+        const json = await fetchJSON(url.toString(), 9000);
+        instruments.push(...(json?.result?.list || []));
+        cursor = json?.result?.nextPageCursor || '';
+        guard += 1;
+      } while (cursor && guard < 8);
+    }
+
+    const filtered = instruments.filter(x => {
+      if (x.status !== 'Trading' || x.quoteCoin !== 'USDT') return false;
+      if (category === 'linear') return x.contractType === 'LinearPerpetual' && (!x.settleCoin || x.settleCoin === 'USDT');
+      return true;
+    });
+
+    state.instrumentMeta = new Map(filtered.map(x => [x.symbol, x]));
+    state.qualifiedSymbols = new Set(filtered.map(x => x.symbol));
+    return filtered;
+  }
+
   async function loadMarkets(silent=false) {
     try {
-      const json = await fetchJSON(`${API}/tickers?category=${state.category}`);
+      await fetchInstrumentUniverse(state.category);
+      const json = await fetchJSON(`${API}/tickers?category=${state.category}`, 9000);
       if (!json?.result?.list) throw new Error('Unexpected API payload');
       state.allMarkets = json.result.list
-        .filter(x => x.symbol.endsWith('USDT') && Number(x.lastPrice) > 0)
-        .map(normalizeTicker);
+        .filter(x => state.qualifiedSymbols.has(x.symbol) && Number(x.lastPrice) > 0)
+        .map(x => ({ ...normalizeTicker(x), instrument: state.instrumentMeta.get(x.symbol) }));
       state.restConnected = true;
-      if (!silent) toast(`Bybit ${marketName()} market list loaded`);
+      if (!silent) toast(`${state.allMarkets.length} Bybit ${marketName()} USDT markets loaded`);
     } catch (err) {
+      console.warn('Bybit market bootstrap failed', err);
       if (!state.allMarkets.length) state.allMarkets = syntheticMarkets();
       state.restConnected = false;
       jitterSynthetic();
@@ -238,7 +277,9 @@
     disconnectSocket(false);
     const generation = ++state.socketGeneration;
     const visible = visibleMarkets();
-    if (!visible.length) return;
+    const focusMarket = state.focusSymbol ? state.allMarkets.find(m => m.symbol === state.focusSymbol) : null;
+    const subscribedMarkets = focusMarket && !visible.some(m => m.symbol === focusMarket.symbol) ? [...visible, focusMarket] : visible;
+    if (!subscribedMarkets.length) return;
 
     let socket;
     try { socket = new WebSocket(WS_URL[state.category]); }
@@ -252,10 +293,15 @@
       state.reconnectAttempt = 0;
       setConnection();
       const args = [];
-      for (const m of visible) {
+      for (const m of subscribedMarkets) {
         args.push(`tickers.${m.symbol}`);
         args.push(`kline.${state.timeframe}.${m.symbol}`);
         args.push(`orderbook.50.${m.symbol}`);
+        if (state.focusSymbol === m.symbol) {
+          for (const tf of ['1','5','15','60']) {
+            if (tf !== state.timeframe) args.push(`kline.${tf}.${m.symbol}`);
+          }
+        }
       }
       socket.send(JSON.stringify({ op: 'subscribe', args }));
       state.socketPing = setInterval(() => {
@@ -420,8 +466,24 @@
     renderBoard(); renderCoinList(); renderDensityMap(); renderAlerts(); updatePager();
   }
 
+  function destroyChart(card) {
+    const id = card?.dataset?.chartId;
+    if (!id) return;
+    const item = chartRegistry.get(id);
+    if (item) {
+      try { item.resizeObserver?.disconnect(); } catch (_) {}
+      try { item.chart?.remove(); } catch (_) {}
+      chartRegistry.delete(id);
+    }
+  }
+
+  function destroyChartsWithin(root) {
+    root?.querySelectorAll?.('.chart-card').forEach(destroyChart);
+  }
+
   function renderBoard() {
     const visible = visibleMarkets();
+    destroyChartsWithin(els.chartGrid);
     els.chartGrid.innerHTML = '';
     els.chartGrid.style.gridTemplateColumns = `repeat(${state.layoutCols},minmax(0,1fr))`;
     const rows = Math.ceil(state.perPage / state.layoutCols);
@@ -439,6 +501,7 @@
     card.className = 'chart-card';
     card.dataset.symbol = m.symbol;
     card.dataset.tf = tf;
+    card.dataset.chartId = `tv-${++state.chartSeq}`;
     const direction = m.price24hPcnt >= 0 ? 'up' : 'down';
     const hotChange = Math.abs(m.price24hPcnt*100) >= 5 ? 'hot' : direction;
     const funding = state.category === 'linear' && Number.isFinite(m.fundingRate) ? `<span class="metric">F <strong>${(m.fundingRate*100).toFixed(3)}%</strong></span>` : '';
@@ -457,7 +520,7 @@
           ${opts.focus ? '' : '<button class="tiny-btn focus-btn" title="Focus mode">⛶</button>'}
         </span>
       </div>
-      <canvas class="chart-canvas"></canvas>
+      <div class="chart-canvas tv-chart" aria-label="TradingView Lightweight Chart"></div>
       <div class="chart-watermark">${m.symbol.replace('USDT','')}</div>
       <div class="price-tag live-price">${priceFmt(m.lastPrice)}</div>
     `;
@@ -476,96 +539,177 @@
       if (p) p.textContent = priceFmt(m.lastPrice);
       if (c) { c.textContent = pct(m.price24hPcnt*100); c.className = `metric live-change ${m.price24hPcnt>=0?'up':'down'}`; }
     });
-    const row = document.querySelector(`.coin-row[data-symbol="${CSS.escape(symbol)}"]`);
-    if (row) {
-      row.querySelector('.coin-live-price')?.replaceChildren(document.createTextNode(priceFmt(m.lastPrice)));
+  }
+
+  function tvCandle(c) {
+    return { time: Math.floor(c.t / 1000), open: c.o, high: c.h, low: c.l, close: c.c };
+  }
+
+  function tvVolume(c) {
+    return { time: Math.floor(c.t / 1000), value: c.v, color: c.c >= c.o ? 'rgba(57,201,129,.28)' : 'rgba(237,93,101,.28)' };
+  }
+
+  function removeDensityLines(item) {
+    for (const line of item.densityLines || []) {
+      try { item.candles.removePriceLine(line); } catch (_) {}
     }
+    item.densityLines = [];
+  }
+
+  function applyDensityLines(item, market) {
+    removeDensityLines(item);
+    if (!state.showDensity) return;
+    const ds = state.bookDensities.get(market.symbol) || [];
+    item.densityLines = ds.slice(0, 8).map(d => item.candles.createPriceLine({
+      price: d.price,
+      color: d.side === 'ask' ? 'rgba(237,93,101,.9)' : 'rgba(57,201,129,.9)',
+      lineWidth: 1,
+      lineStyle: LightweightCharts.LineStyle.Dashed,
+      axisLabelVisible: true,
+      title: `${d.side.toUpperCase()} ${compact(d.notional)} ${d.distance.toFixed(2)}%`,
+    }));
+  }
+
+  function applyCascadeMarker(item, candles) {
+    if (!item.markerApi || !state.showCascade || candles.length < 20) {
+      try { item.markerApi?.setMarkers([]); } catch (_) {}
+      return;
+    }
+    const recent = candles.slice(-18);
+    const bodies = recent.map(c => Math.abs(c.c-c.o)/Math.max(c.o,.00000001));
+    const maxBody = Math.max(...bodies);
+    if (maxBody <= .003) { item.markerApi.setMarkers([]); return; }
+    const i = bodies.indexOf(maxBody);
+    const c = recent[i];
+    item.markerApi.setMarkers([{
+      time: Math.floor(c.t / 1000),
+      position: c.c >= c.o ? 'belowBar' : 'aboveBar',
+      color: '#b788ff',
+      shape: c.c >= c.o ? 'arrowUp' : 'arrowDown',
+      text: 'IMP',
+    }]);
+  }
+
+  function createTradingViewChart(card, candles, market) {
+    const container = card.querySelector('.tv-chart');
+    if (!container || !window.LightweightCharts) return null;
+    const rect = container.getBoundingClientRect();
+    const chart = LightweightCharts.createChart(container, {
+      width: Math.max(80, Math.floor(rect.width)),
+      height: Math.max(80, Math.floor(rect.height)),
+      layout: {
+        background: { type: LightweightCharts.ColorType.Solid, color: '#101216' },
+        textColor: '#707782',
+        attributionLogo: true,
+      },
+      grid: {
+        vertLines: { visible: state.showGrid, color: '#1a1e24' },
+        horzLines: { visible: state.showGrid, color: '#1a1e24' },
+      },
+      crosshair: { mode: LightweightCharts.CrosshairMode.Normal },
+      rightPriceScale: { borderColor: '#262b32', scaleMargins: { top: .08, bottom: state.showVolume ? .24 : .08 } },
+      timeScale: { borderColor: '#262b32', timeVisible: true, secondsVisible: false, rightOffset: 4, barSpacing: 5 },
+      localization: { locale: 'en-GB' },
+      handleScale: true,
+      handleScroll: true,
+    });
+
+    const candleSeries = chart.addSeries(LightweightCharts.CandlestickSeries, {
+      upColor: '#39c981', downColor: '#ed5d65', borderVisible: false,
+      wickUpColor: '#39c981', wickDownColor: '#ed5d65', priceLineVisible: true, lastValueVisible: true,
+    });
+    candleSeries.setData(candles.map(tvCandle));
+
+    let volumeSeries = null;
+    if (state.showVolume) {
+      volumeSeries = chart.addSeries(LightweightCharts.HistogramSeries, {
+        priceFormat: { type: 'volume' }, priceScaleId: '', lastValueVisible: false, priceLineVisible: false,
+      });
+      volumeSeries.priceScale().applyOptions({ scaleMargins: { top: .82, bottom: 0 } });
+      volumeSeries.setData(candles.map(tvVolume));
+    }
+
+    let markerApi = null;
+    if (typeof LightweightCharts.createSeriesMarkers === 'function') {
+      markerApi = LightweightCharts.createSeriesMarkers(candleSeries, []);
+    }
+
+    const item = { chart, candles: candleSeries, volume: volumeSeries, markerApi, densityLines: [], card, container };
+    applyDensityLines(item, market);
+    applyCascadeMarker(item, candles);
+    chart.timeScale().fitContent();
+
+    const resizeObserver = new ResizeObserver(entries => {
+      const r = entries[0]?.contentRect;
+      if (r?.width > 20 && r?.height > 20) chart.resize(Math.floor(r.width), Math.floor(r.height));
+    });
+    resizeObserver.observe(container);
+    item.resizeObserver = resizeObserver;
+    chartRegistry.set(card.dataset.chartId, item);
+    return item;
   }
 
   function redrawSymbol(symbol, tf=null) {
     document.querySelectorAll(`.chart-card[data-symbol="${CSS.escape(symbol)}"]`).forEach(card => {
       if (tf && card.dataset.tf !== tf) return;
-      const m = state.allMarkets.find(x => x.symbol === symbol);
-      const candles = state.candles.get(`${symbol}:${card.dataset.tf}`) || [];
-      const canvas = card.querySelector('canvas');
-      if (m && canvas) drawChart(canvas, candles, m);
+      redrawChartCard(card);
     });
+  }
+
+  function redrawChartCard(card) {
+    const m = state.allMarkets.find(x => x.symbol === card.dataset.symbol);
+    const candles = state.candles.get(`${card.dataset.symbol}:${card.dataset.tf}`) || [];
+    if (!m || !candles.length) return;
+    let item = chartRegistry.get(card.dataset.chartId);
+    if (!item) item = createTradingViewChart(card, candles, m);
+    if (!item) return;
+    item.chart.applyOptions({
+      grid: { vertLines: { visible: state.showGrid, color: '#1a1e24' }, horzLines: { visible: state.showGrid, color: '#1a1e24' } },
+      rightPriceScale: { scaleMargins: { top: .08, bottom: state.showVolume ? .24 : .08 } },
+    });
+    item.candles.setData(candles.map(tvCandle));
+    if (state.showVolume) {
+      if (!item.volume) {
+        item.volume = item.chart.addSeries(LightweightCharts.HistogramSeries, { priceFormat:{type:'volume'}, priceScaleId:'', lastValueVisible:false, priceLineVisible:false });
+        item.volume.priceScale().applyOptions({ scaleMargins:{top:.82,bottom:0} });
+      }
+      item.volume.setData(candles.map(tvVolume));
+    } else if (item.volume) {
+      try { item.chart.removeSeries(item.volume); } catch (_) {}
+      item.volume = null;
+    }
+    applyDensityLines(item, m);
+    applyCascadeMarker(item, candles);
   }
 
   function redrawCanvases() {
-    document.querySelectorAll('.chart-card').forEach(card => {
-      const m = state.allMarkets.find(x => x.symbol === card.dataset.symbol);
-      const candles = state.candles.get(`${card.dataset.symbol}:${card.dataset.tf}`) || [];
-      const canvas = card.querySelector('canvas');
-      if (m && canvas) drawChart(canvas, candles, m);
-    });
+    document.querySelectorAll('.chart-card').forEach(redrawChartCard);
   }
 
-  function drawChart(canvas, candles, market) {
-    const rect = canvas.getBoundingClientRect();
-    if (rect.width < 20 || rect.height < 20) return;
-    const dpr = window.devicePixelRatio || 1;
-    canvas.width = Math.round(rect.width*dpr); canvas.height = Math.round(rect.height*dpr);
-    const ctx = canvas.getContext('2d'); ctx.scale(dpr,dpr);
-    const w=rect.width,h=rect.height;
-    ctx.clearRect(0,0,w,h);
-    if (!candles.length) return;
-    const pad={l:5,r:44,t:8,b:16};
-    const priceH = state.showVolume ? h*.77 : h-pad.b;
-    let min=Math.min(...candles.map(c=>c.l)), max=Math.max(...candles.map(c=>c.h));
-    const liveDs = state.bookDensities.get(market.symbol) || [];
-    if (liveDs.length) {
-      min=Math.min(min,...liveDs.map(d=>d.price));
-      max=Math.max(max,...liveDs.map(d=>d.price));
-    }
-    const spread=max-min || max*.01 || 1; min-=spread*.07; max+=spread*.07;
-    const y=p=>pad.t+(max-p)/(max-min)*(priceH-pad.t);
-    const x=i=>pad.l+i*(w-pad.l-pad.r)/(Math.max(1,candles.length-1));
-    if(state.showGrid){
-      ctx.strokeStyle='#191d22';ctx.lineWidth=1;
-      for(let i=1;i<5;i++){const yy=pad.t+i*(priceH-pad.t)/5;ctx.beginPath();ctx.moveTo(pad.l,yy);ctx.lineTo(w-pad.r,yy);ctx.stroke();}
-      for(let i=1;i<6;i++){const xx=pad.l+i*(w-pad.l-pad.r)/6;ctx.beginPath();ctx.moveTo(xx,pad.t);ctx.lineTo(xx,priceH);ctx.stroke();}
-    }
-    if(state.showDensity){
-      liveDs.slice(0,6).forEach(d=>{
-        if(d.price<min||d.price>max)return;
-        ctx.strokeStyle=d.side==='ask'?'rgba(237,93,101,.82)':'rgba(57,201,129,.82)';
-        ctx.setLineDash([3,2]);ctx.beginPath();ctx.moveTo(w*.48,y(d.price));ctx.lineTo(w-pad.r,y(d.price));ctx.stroke();ctx.setLineDash([]);
-        ctx.font='7px sans-serif';ctx.fillStyle=d.side==='ask'?'#d78991':'#79c79a';
-        ctx.fillText(`${d.side==='ask'?'ASK':'BID'} ${compact(d.notional)} · ${d.distance.toFixed(2)}%`, w*.49, y(d.price)-2);
-      });
-    }
-    const cw=Math.max(1,(w-pad.l-pad.r)/candles.length*.65);
-    if(state.showVolume){
-      const maxV=Math.max(...candles.map(c=>c.v),1);
-      candles.forEach((c,i)=>{const xx=x(i);const vh=(c.v/maxV)*(h-priceH-4);ctx.fillStyle=c.c>=c.o?'rgba(57,201,129,.20)':'rgba(237,93,101,.20)';ctx.fillRect(xx-cw/2,h-pad.b-vh,cw,vh);});
-      ctx.strokeStyle='#1c2026';ctx.beginPath();ctx.moveTo(pad.l,priceH+1);ctx.lineTo(w-pad.r,priceH+1);ctx.stroke();
-    }
-    candles.forEach((c,i)=>{
-      const xx=x(i), up=c.c>=c.o; ctx.strokeStyle=up?'#52c97f':'#dc5b61'; ctx.fillStyle=ctx.strokeStyle; ctx.lineWidth=1;
-      ctx.beginPath();ctx.moveTo(xx,y(c.h));ctx.lineTo(xx,y(c.l));ctx.stroke();
-      const yy=Math.min(y(c.o),y(c.c)), bh=Math.max(1,Math.abs(y(c.o)-y(c.c)));ctx.fillRect(xx-cw/2,yy,cw,bh);
+  function sortedCoinUniverse() {
+    const list = [...state.allMarkets];
+    const key = state.sortBy;
+    list.sort((a,b) => {
+      if (state.starred.has(a.symbol) !== state.starred.has(b.symbol)) return state.starred.has(a.symbol) ? -1 : 1;
+      if (key === 'change') return Math.abs(b.price24hPcnt) - Math.abs(a.price24hPcnt);
+      if (key === 'range') return b.range - a.range;
+      if (key === 'natr') return b.natr - a.natr;
+      if (key === 'density') return liveDensityDistance(a) - liveDensityDistance(b);
+      return b.turnover24h - a.turnover24h;
     });
-    if(state.showCascade && candles.length>20){
-      const recent = candles.slice(-18);
-      const bodies = recent.map(c => Math.abs(c.c-c.o)/Math.max(c.o,.00000001));
-      const maxBody = Math.max(...bodies), idx = candles.length-18+bodies.indexOf(maxBody), c=candles[idx];
-      if(c && maxBody>.003){ctx.strokeStyle='#b788ff';ctx.lineWidth=1;ctx.beginPath();ctx.moveTo(x(idx)-7,y(c.h)-8);ctx.lineTo(x(idx),y(c.h));ctx.lineTo(x(idx)+7,y(c.h)-8);ctx.stroke();}
-    }
-    const last=market.lastPrice || candles[candles.length-1].c;ctx.strokeStyle='#6b737e';ctx.setLineDash([2,2]);ctx.beginPath();ctx.moveTo(pad.l,y(last));ctx.lineTo(w-pad.r,y(last));ctx.stroke();ctx.setLineDash([]);
-    ctx.font='7px ui-monospace, monospace';ctx.fillStyle='#7d858f';ctx.textAlign='left';
-    for(let i=0;i<5;i++){const p=max-i*(max-min)/4;ctx.fillText(priceFmt(p),w-pad.r+3,y(p)+2);}
-    const now=new Date();ctx.fillStyle='#59616b';ctx.fillText(now.toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'}),5,h-4);
+    return list;
   }
 
   function renderCoinList() {
     els.coinList.innerHTML='';
-    state.markets.slice(0,120).forEach(m=>{
+    sortedCoinUniverse().forEach(m=>{
       const row=document.createElement('div');row.className='coin-row';row.dataset.symbol=m.symbol;
       row.innerHTML=`<span class="coin-symbol"><b class="mini-star ${state.starred.has(m.symbol)?'starred':''}">★</b>${m.symbol.replace('USDT','')} <small>${m.source}</small></span><span class="${m.price24hPcnt>=0?'up':'down'}">${pct(m.price24hPcnt*100)}</span><span>${m.range.toFixed(1)}</span><span>${m.natr.toFixed(1)}</span><span>${compact(m.turnover24h)}</span>`;
       row.addEventListener('click',()=>openFocus(m.symbol)); els.coinList.appendChild(row);
     });
     els.boardCount.textContent=state.markets.length;
+    const coinsTab = document.querySelector('.side-tabs button[data-tab="coins"]');
+    if (coinsTab) coinsTab.innerHTML = `Coins <span class="pill">${state.allMarkets.length}</span>`;
   }
 
   function renderDensityMap(){
@@ -619,16 +763,18 @@
 
   async function openFocus(symbol){
     const m=state.allMarkets.find(x=>x.symbol===symbol);if(!m)return;
-    els.focusTitle.textContent=`${symbol} · ${marketName()} · multi-timeframe focus`;els.focusGrid.innerHTML='';
+    state.focusSymbol=symbol;
+    els.focusTitle.textContent=`${symbol} · ${marketName()} · multi-timeframe focus`;destroyChartsWithin(els.focusGrid);els.focusGrid.innerHTML='';
     openModal(els.focusModal);
     const tfs=['1','5','15','60'];
     await Promise.all(tfs.map(tf=>fetchCandles(symbol,tf,160)));
     tfs.forEach(tf=>{const card=makeChartCard(m,tf,{focus:true});card.querySelector('.ticker').textContent=`${symbol.replace('USDT','')} · ${tf==='60'?'1h':tf+'m'}`;els.focusGrid.appendChild(card)});
     requestAnimationFrame(redrawCanvases);
+    connectVisibleWebSocket();
   }
 
   function openModal(modal){modal.classList.add('open');modal.setAttribute('aria-hidden','false')}
-  function closeModal(modal){modal.classList.remove('open');modal.setAttribute('aria-hidden','true')}
+  function closeModal(modal){modal.classList.remove('open');modal.setAttribute('aria-hidden','true');if(modal===els.focusModal){state.focusSymbol=null;destroyChartsWithin(els.focusGrid);connectVisibleWebSocket()}}
 
   function renderSearch(query=''){
     const q=query.trim().toUpperCase();let list=state.allMarkets.filter(m=>!q||m.symbol.includes(q)).slice(0,30);
@@ -646,6 +792,8 @@
     state.page = 0;
     state.allMarkets = [];
     state.markets = [];
+    state.qualifiedSymbols = new Set();
+    state.instrumentMeta = new Map();
     state.candles.clear();
     state.books.clear();
     state.bookDensities.clear();
@@ -665,7 +813,7 @@
         const json = await fetchJSON(`${API}/tickers?category=${state.category}`,5000);
         if (json?.result?.list) {
           const current = new Map(state.allMarkets.map(m=>[m.symbol,m]));
-          for (const x of json.result.list.filter(x=>x.symbol.endsWith('USDT')&&Number(x.lastPrice)>0)) {
+          for (const x of json.result.list.filter(x=>state.qualifiedSymbols.has(x.symbol)&&Number(x.lastPrice)>0)) {
             const n=normalizeTicker(x); current.set(n.symbol,{...(current.get(n.symbol)||{}),...n});
           }
           state.allMarkets=[...current.values()];deriveMarkets();renderCoinList();updatePager();
@@ -705,13 +853,13 @@
     document.getElementById('newAlertBtn').onclick=()=>openModal(els.alertModal);
     document.getElementById('saveAlertBtn').onclick=()=>{const symbol=document.getElementById('alertSymbol').value.trim().toUpperCase();const type=document.getElementById('alertType').value;const value=+document.getElementById('alertValue').value;if(!symbol||!value)return;state.alerts.unshift({id:Date.now(),symbol,type,value,active:true});renderAlerts();closeModal(els.alertModal);toast(`Alert created for ${symbol}`)};
     window.addEventListener('resize',()=>requestAnimationFrame(redrawCanvases));
-    window.addEventListener('beforeunload',()=>disconnectSocket());
+    window.addEventListener('beforeunload',()=>{disconnectSocket();chartRegistry.forEach(x=>{try{x.resizeObserver?.disconnect()}catch(_){};try{x.chart?.remove()}catch(_){}});chartRegistry.clear()});
     document.addEventListener('visibilitychange',()=>{if(!document.hidden&&!state.wsConnected)connectVisibleWebSocket()});
   }
 
   async function init(){
     wireEvents();renderAlerts();setConnection();await loadMarkets(true);await bootstrapOrderbooks();renderAll();scheduleRefresh();
-    setTimeout(()=>toast('Live mode: Bybit Spot/Perpetual + L50 order-book walls'),500);
+    setTimeout(()=>toast('Live mode: all Bybit USDT markets + TradingView Lightweight Charts + L50 walls'),500);
   }
 
   init();

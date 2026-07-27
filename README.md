@@ -1,52 +1,40 @@
-# ScalpDeck Live
+# ScalpDeck Live — TradingView Charts + Full Bybit USDT Universe
 
-Live Bybit Spot + USDT Perpetual crypto screener.
+Static GitHub Pages-compatible crypto screener.
 
-## Live data used
+## What changed
 
-- Bybit V5 public WebSocket: Spot and Linear/Perpetual
-- `tickers.{symbol}` for live prices and 24h fields
-- `kline.{interval}.{symbol}` for the currently selected live candle
-- `orderbook.50.{symbol}` for L50 order-book snapshots/deltas
-- Bybit V5 REST for initial ticker lists, candles, and order-book bootstrap
+- Loads the active Bybit instrument universe before loading tickers.
+- **Spot:** every active Bybit Spot market whose quote coin is `USDT`.
+- **Perpetual:** every active Bybit `LinearPerpetual` whose quote/settlement coin is `USDT`.
+- Handles Bybit linear instrument pagination with `limit=1000` and `nextPageCursor`.
+- The Coins panel renders the complete qualified market list, not only the first 120 rows.
+- Board volume filtering is separate from the complete Coins list.
+- Charts are rendered with **TradingView Lightweight Charts™ v5.2.0** using Bybit candles and WebSocket updates.
+- Live Bybit L50 density levels are drawn as TradingView price lines.
+- Bybit Spot / Perpetual switch, focus mode, watchlist, volume, sorting, alerts and density map remain available.
 
-The density/wall lines are calculated from actual public Bybit L50 order-book levels. A wall qualifies when its price × quantity notional exceeds the configured density threshold and is within the configured maximum percentage distance from market price.
+## Data sources
 
-Important: Bybit documents that RPI orders are not included in the public order-book stream.
+Public Bybit V5 REST and WebSocket endpoints. No API key is needed for this read-only screener.
 
-## Run locally
+## Deploy
 
-The files are static. Use a local web server rather than double-clicking the HTML file.
+Upload these files to the root of your GitHub repository and commit them:
 
-### Python
+- `index.html`
+- `styles.css`
+- `app.js`
+- `README.md`
+- `DEPLOYMENT.md`
 
-```bash
-python -m http.server 8080
-```
+GitHub Pages: deploy from `main` → `/(root)`.
 
-Then open http://localhost:8080
+## TradingView attribution
 
-### Node
+This project uses TradingView Lightweight Charts™.
 
-```bash
-npx serve .
-```
+TradingView Lightweight Charts™  
+Copyright (c) 2025 TradingView, Inc. https://www.tradingview.com/
 
-## GitHub Pages
-
-You can upload these files to the existing `Scalpdeck` repository and keep GitHub Pages enabled. The browser connects directly to Bybit's public WebSocket streams; no API key is required for the public screener.
-
-## Production recommendation
-
-For a public production service, use:
-
-- Frontend: Vercel, Cloudflare Pages, or similar
-- Public realtime: browser → Bybit public WebSocket, or a central market-data service if scanning hundreds of markets
-- Backend: Node.js service for full-market order-book aggregation, persistent alerts, databases and Telegram/Discord notifications
-- Private trading: backend-only Bybit API credentials; never place API secrets in `app.js`, GitHub, or browser storage
-
-A custom domain is optional and can be attached after deployment.
-
-## Private order execution
-
-This build is deliberately read-only. It does not submit Buy/Sell orders to a Bybit account. Private trading should be added as a separate authenticated backend and tested against Bybit testnet before mainnet is enabled.
+The chart attribution logo remains enabled.
