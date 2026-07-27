@@ -213,10 +213,12 @@
       if (!silent) toast(`${state.allMarkets.length} Bybit ${marketName()} USDT markets loaded`);
     } catch (err) {
       console.warn('Bybit market bootstrap failed', err);
-      if (!state.allMarkets.length) state.allMarkets = syntheticMarkets();
       state.restConnected = false;
+      if (!state.allMarkets.length) {
+        state.allMarkets = syntheticMarkets().map(m => ({ ...m, source: 'DEMO' }));
+      }
       jitterSynthetic();
-      if (!silent) toast(`Market bootstrap failed: ${err?.message || 'API unavailable'}`, true);
+      toast(`Bybit REST unavailable — showing 24 DEMO symbols. ${err?.message || 'Check /api/health and Vercel region.'}`, true);
     }
     deriveMarkets();
     await hydrateVisibleCandles();
@@ -362,7 +364,10 @@
           }
         }
       }
-      socket.send(JSON.stringify({ op: 'subscribe', args }));
+      const chunkSize = state.category === 'spot' ? 10 : 200;
+      for (let i = 0; i < args.length; i += chunkSize) {
+        socket.send(JSON.stringify({ op: 'subscribe', args: args.slice(i, i + chunkSize) }));
+      }
       state.socketPing = setInterval(() => {
         if (socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify({ op: 'ping' }));
       }, 20000);

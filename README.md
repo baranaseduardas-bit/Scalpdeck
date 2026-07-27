@@ -36,3 +36,9 @@ The Coins panel supports independent sorting by 24h percentage change and 24h US
 - Fixes Perpetual symbol loading when the frontend uses the relative `/api` Vercel backend.
 - `new URL()` now resolves against `window.location.origin`, so paginated Bybit linear instruments load correctly.
 - Vercel function region is set to Singapore (`sin1`) to place the REST proxy closer to Bybit market-data infrastructure.
+
+## v4.7: full Bybit universe fix
+
+Vercel Functions are pinned to Singapore (`sin1`). This matters because Vercel defaults new Functions to Washington, D.C. (`iad1`), while Bybit rejects API requests originating from U.S. IP addresses. The 24-symbol list is only a diagnostic fallback; a healthy deployment should load the complete active USDT Spot or Linear Perpetual universe.
+
+After deployment, open `/api/health`. It should report `"ok": true` and normally `"region": "sin1"`.
